@@ -147,6 +147,39 @@
   #info .row .v { color: var(--text); text-align: right; word-break: break-word; }
   #main.no-info #info { display: none; }
 
+  #series-section { margin-bottom: 20px; }
+  #series-section.hidden { display: none; }
+  #series-list { display: flex; flex-direction: column; gap: 4px; }
+  .series-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    background: var(--bg);
+  }
+  .series-item:hover { border-color: var(--accent); }
+  .series-item.active { border-color: var(--accent); background: rgba(0, 229, 255, 0.06); }
+  .series-item canvas {
+    width: 48px;
+    height: 48px;
+    background: #000;
+    image-rendering: pixelated;
+    flex-shrink: 0;
+    object-fit: contain;
+  }
+  .series-item .si-info { flex: 1; min-width: 0; overflow: hidden; }
+  .series-item .si-desc {
+    color: var(--text);
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .series-item.active .si-desc { color: var(--accent); }
+  .series-item .si-sub { color: var(--muted); font-size: 10px; margin-top: 2px; }
+
   #canvas-area {
     position: relative;
     background: #000;
@@ -438,6 +471,10 @@
 
   <div id="main">
     <aside id="info">
+      <div id="series-section">
+        <h3>Series</h3>
+        <div id="series-list"></div>
+      </div>
       <h3>Metadata</h3>
       <div id="info-rows"></div>
     </aside>
@@ -510,8 +547,11 @@
 'use strict';
 
 const state = {
-  slices: [],         // [{ rows, cols, windowed:Uint8ClampedArray, instanceNumber, brightness, name }]
-  metadata: {},
+  allSeries: [],      // [{ uid, description, modality, slices, meta, sliceBrightness, notables }]
+  currentSeries: 0,
+  slices: [],         // alias to active series' slices
+  metadata: {},       // alias to active series' meta
+  studyDescription: '',
   currentSlice: 0,
   totalSlices: 0,
   zoom: 1,
@@ -773,7 +813,7 @@ async function parseFolder(files) {
   const list = candidates.length ? candidates : files;
 
   const slices = [];
-  let firstMeta = null;
+  const seriesMetaMap = new Map();
   let processed = 0;
   const skippedReasons = new Map();
 
@@ -850,6 +890,10 @@ async function parseFolder(files) {
       }
 
       const echoTime = dataSet.floatString('x00180081');
+      const seriesUid = dataSet.string('x0020000e') || '_default';
+      const seriesNumber = parseInt(dataSet.string('x00200011') || '0', 10) || 0;
+      const seriesDescription = (dataSet.string('x0008103e') || '').trim();
+      const modality = (dataSet.string('x00080060') || '').trim();
 
       slices.push({
         rows, cols, windowed,
@@ -858,9 +902,10 @@ async function parseFolder(files) {
         echoTime: (typeof echoTime === 'number' && !isNaN(echoTime)) ? echoTime : null,
         brightness: meanBrightness(windowed),
         name: file.name,
+        seriesUid, seriesNumber, seriesDescription, modality,
       });
 
-      if (!firstMeta) {
+      if (!seriesMetaMap.has(seriesUid)) {
         const ps = dataSet.string('x00280030');
         let psStr = 'unknown';
         if (ps) {
@@ -870,17 +915,17 @@ async function parseFolder(files) {
           }
         }
         const st = dataSet.floatString('x00180050');
-        firstMeta = {
+        seriesMetaMap.set(seriesUid, {
           patient_id: 'ANON',
           study_description: dataSet.string('x00081030') || '',
-          series_description: dataSet.string('x0008103e') || '',
-          modality: dataSet.string('x00080060') || '',
+          series_description: seriesDescription || `Series ${seriesNumber}`,
+          modality: modality,
           slice_thickness: (typeof st === 'number' && !isNaN(st)) ? `${st.toFixed(1)}mm` : 'unknown',
           pixel_spacing: psStr,
           rows, cols,
           window_center: Math.round(center * 100) / 100,
           window_width: Math.round(width * 100) / 100,
-        };
+        });
       }
     } catch (_) {
       // skip non-DICOM or corrupt
@@ -901,54 +946,81 @@ async function parseFolder(files) {
     return;
   }
 
-  // Sort by physical slice position when available (most reliable). Then by
-  // echo time so multi-echo series stay grouped per slice. InstanceNumber and
-  // filename are last-resort tiebreakers.
-  const havePos = slices.some(s => s.slicePos !== null);
-  slices.sort((a, b) => {
-    if (havePos) {
-      const ap = a.slicePos, bp = b.slicePos;
-      if (ap !== null && bp !== null && ap !== bp) return ap - bp;
-      if (ap !== null && bp === null) return -1;
-      if (ap === null && bp !== null) return 1;
-    }
-    if (a.echoTime !== null && b.echoTime !== null && a.echoTime !== b.echoTime) {
-      return a.echoTime - b.echoTime;
-    }
-    if (a.instanceNumber !== b.instanceNumber) return a.instanceNumber - b.instanceNumber;
-    return a.name.localeCompare(b.name);
-  });
-
-  // Detect multi-echo / mixed series: count distinct slice positions and
-  // average spacing for the metadata panel so the user can tell what they got.
-  let sortInfo = `Position (${slices.length})`;
-  if (havePos) {
-    const positions = slices.map(s => s.slicePos).filter(v => v !== null).sort((a, b) => a - b);
-    const unique = [];
-    const eps = 0.01;
-    for (const p of positions) {
-      if (unique.length === 0 || Math.abs(unique[unique.length - 1] - p) > eps) unique.push(p);
-    }
-    const echoes = slices.length / Math.max(unique.length, 1);
-    if (unique.length > 1) {
-      const spacings = [];
-      for (let i = 1; i < unique.length; i++) spacings.push(unique[i] - unique[i - 1]);
-      const avgSpacing = spacings.reduce((a, b) => a + b, 0) / spacings.length;
-      sortInfo = `${unique.length} positions · ${avgSpacing.toFixed(2)}mm`;
-      if (echoes >= 1.5) sortInfo += ` · ${Math.round(echoes)} echoes/pos`;
-    }
-  } else {
-    sortInfo = `Instance order (no position tags)`;
+  // Group slices by SeriesInstanceUID, then sort each series independently.
+  const groups = new Map();
+  for (const s of slices) {
+    if (!groups.has(s.seriesUid)) groups.set(s.seriesUid, []);
+    groups.get(s.seriesUid).push(s);
   }
-  firstMeta.slice_order = sortInfo;
 
-  state.slices = slices;
-  state.totalSlices = slices.length;
-  firstMeta.total_slices = slices.length;
-  state.metadata = firstMeta;
+  const allSeries = [];
+  for (const [uid, sliceList] of groups.entries()) {
+    const havePos = sliceList.some(s => s.slicePos !== null);
+    sliceList.sort((a, b) => {
+      if (havePos) {
+        const ap = a.slicePos, bp = b.slicePos;
+        if (ap !== null && bp !== null && ap !== bp) return ap - bp;
+        if (ap !== null && bp === null) return -1;
+        if (ap === null && bp !== null) return 1;
+      }
+      if (a.echoTime !== null && b.echoTime !== null && a.echoTime !== b.echoTime) {
+        return a.echoTime - b.echoTime;
+      }
+      if (a.instanceNumber !== b.instanceNumber) return a.instanceNumber - b.instanceNumber;
+      return a.name.localeCompare(b.name);
+    });
+
+    let sortInfo = `Instance order`;
+    if (havePos) {
+      const positions = sliceList.map(s => s.slicePos).filter(v => v !== null).sort((a, b) => a - b);
+      const unique = [];
+      const eps = 0.01;
+      for (const p of positions) {
+        if (unique.length === 0 || Math.abs(unique[unique.length - 1] - p) > eps) unique.push(p);
+      }
+      if (unique.length > 1) {
+        const spacings = [];
+        for (let i = 1; i < unique.length; i++) spacings.push(unique[i] - unique[i - 1]);
+        const avgSpacing = spacings.reduce((a, b) => a + b, 0) / spacings.length;
+        const echoes = sliceList.length / Math.max(unique.length, 1);
+        sortInfo = `${unique.length} positions · ${avgSpacing.toFixed(2)}mm`;
+        if (echoes >= 1.5) sortInfo += ` · ${Math.round(echoes)} echoes/pos`;
+      }
+    }
+
+    const meta = { ...(seriesMetaMap.get(uid) || {}) };
+    meta.total_slices = sliceList.length;
+    meta.slice_order = sortInfo;
+
+    allSeries.push({
+      uid,
+      seriesNumber: sliceList[0].seriesNumber || 0,
+      description: sliceList[0].seriesDescription || `Series ${sliceList[0].seriesNumber || ''}`.trim(),
+      modality: sliceList[0].modality || '',
+      slices: sliceList,
+      meta,
+      sliceBrightness: sliceList.map(s => s.brightness),
+    });
+  }
+
+  allSeries.sort((a, b) => a.seriesNumber - b.seriesNumber || a.description.localeCompare(b.description));
+
+  // Pick a sensible default: largest series that isn't a localizer/scout.
+  let defaultIdx = 0, bestSize = -1;
+  for (let i = 0; i < allSeries.length; i++) {
+    const d = (allSeries[i].description || '').toLowerCase();
+    const isScout = /localizer|scout|survey/.test(d);
+    const score = (isScout ? 0 : 1000) + allSeries[i].slices.length;
+    if (score > bestSize) { bestSize = score; defaultIdx = i; }
+  }
+
+  state.allSeries = allSeries;
+  state.studyDescription = (seriesMetaMap.values().next().value || {}).study_description || '';
 
   prog.classList.remove('show');
-  bootViewer();
+  renderSeriesList();
+  loadSeries(defaultIdx);
+  document.getElementById('app').classList.add('show');
 }
 
 /* ---------- Drop / pick wiring ---------- */
@@ -1269,6 +1341,7 @@ function setupInput() {
   });
   document.getElementById('btn-reload').addEventListener('click', () => {
     state.slices = []; state.totalSlices = 0;
+    state.allSeries = []; state.currentSeries = 0;
     document.getElementById('app').classList.remove('show');
     document.getElementById('drop').style.display = 'flex';
     document.getElementById('drop-err').textContent = '';
@@ -1295,16 +1368,71 @@ function setupInput() {
   });
 }
 
-/* ---------- Boot viewer after parse ---------- */
+/* ---------- Series sidebar ---------- */
+
+function makeSeriesThumb(series) {
+  const canvas = document.createElement('canvas');
+  const s = series.slices[Math.floor(series.slices.length / 2)] || series.slices[0];
+  if (!s) return canvas;
+  canvas.width = s.cols;
+  canvas.height = s.rows;
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(s.cols, s.rows);
+  const w = s.windowed;
+  const data = img.data;
+  for (let i = 0, j = 0; i < w.length; i++, j += 4) {
+    const v = w[i];
+    data[j] = v; data[j + 1] = v; data[j + 2] = v; data[j + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return canvas;
+}
+
+function renderSeriesList() {
+  const section = document.getElementById('series-section');
+  const list = document.getElementById('series-list');
+  list.innerHTML = '';
+  if (state.allSeries.length <= 1) {
+    section.classList.add('hidden');
+    return;
+  }
+  section.classList.remove('hidden');
+  state.allSeries.forEach((series, idx) => {
+    const item = document.createElement('div');
+    item.className = 'series-item' + (idx === state.currentSeries ? ' active' : '');
+    item.appendChild(makeSeriesThumb(series));
+    const info = document.createElement('div');
+    info.className = 'si-info';
+    info.innerHTML =
+      `<div class="si-desc">${series.description || `Series ${series.seriesNumber}`}</div>` +
+      `<div class="si-sub">${series.modality || ''} · ${series.slices.length} img</div>`;
+    item.appendChild(info);
+    item.addEventListener('click', () => loadSeries(idx));
+    list.appendChild(item);
+  });
+}
+
+/* ---------- Load a series ---------- */
 
 let inputWired = false;
-function bootViewer() {
-  const app = document.getElementById('app');
-  app.classList.add('show');
+function loadSeries(idx) {
+  if (idx < 0 || idx >= state.allSeries.length) return;
+  state.currentSeries = idx;
+  const series = state.allSeries[idx];
+
+  state.slices = series.slices;
+  state.totalSlices = series.slices.length;
+  state.metadata = series.meta;
+
+  // Reset view + reference + brightness/contrast on series switch.
+  state.currentSlice = 0;
+  state.referenceSlice = 0;
+  state.zoom = 1; state.panX = 0; state.panY = 0;
+  state.brightness = 100; state.contrast = 100;
 
   document.getElementById('counter-total').textContent = state.totalSlices;
   document.getElementById('counter-total-bottom').textContent = state.totalSlices;
-  document.getElementById('slider').max = state.totalSlices - 1;
+  document.getElementById('slider').max = Math.max(state.totalSlices - 1, 0);
   document.getElementById('btn-info').classList.add('active');
 
   renderMetadata(state.metadata);
@@ -1313,10 +1441,12 @@ function bootViewer() {
   renderSliderMarks(notables);
   renderNotableList(notables);
   renderHeatmap();
+  renderSeriesList();
 
   if (!inputWired) { setupInput(); inputWired = true; }
 
   showSlice(0);
+  if (state.compareMode) showReference(0);
 }
 
 /* ---------- Init ---------- */
