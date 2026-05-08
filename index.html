@@ -1,0 +1,940 @@
+<!DOCTYPE html>
+<!--
+DEPLOYMENT:
+1. python convert_dicoms.py
+2. git add slices/ index.html && git commit -m "MRI viewer" && git push
+3. Settings > Pages > Deploy from main /root
+4. Visit: https://yourusername.github.io/yourrepo/
+
+LOCAL: python -m http.server 8080
+
+PRIVACY: Medical images present. Keep repo private or serve locally only.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MRI Viewer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --surface: #141414;
+    --border: #2a2a2a;
+    --accent: #00e5ff;
+    --warn: #ffcc00;
+    --danger: #ff3b3b;
+    --text: #e8e8e8;
+    --muted: #666666;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 13px;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  button {
+    font-family: inherit;
+    font-size: 12px;
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 12px;
+    cursor: pointer;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.active { border-color: var(--accent); color: var(--accent); }
+
+  #app {
+    display: grid;
+    grid-template-rows: 44px 1fr 56px;
+    height: 100vh;
+  }
+
+  /* Top bar */
+  #topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  #topbar .left { display: flex; gap: 8px; }
+  #topbar .right { display: flex; align-items: center; gap: 16px; color: var(--muted); }
+  #topbar .title { color: var(--accent); letter-spacing: 2px; font-weight: 700; }
+  #topbar .counter { color: var(--text); }
+
+  /* Main area */
+  #main {
+    display: grid;
+    grid-template-columns: 280px 1fr 80px;
+    overflow: hidden;
+    min-height: 0;
+  }
+  #main.no-info { grid-template-columns: 0 1fr 80px; }
+
+  /* Metadata panel */
+  #info {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 16px;
+    overflow-y: auto;
+  }
+  #info h3 {
+    margin: 0 0 12px 0;
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+  #info .row {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+    gap: 8px;
+  }
+  #info .row .k { color: var(--muted); }
+  #info .row .v { color: var(--text); text-align: right; word-break: break-word; }
+  #main.no-info #info { display: none; }
+
+  /* Image canvas */
+  #canvas {
+    position: relative;
+    background: #000;
+    overflow: hidden;
+    display: flex;
+  }
+  .panel {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+    border-right: 1px solid var(--border);
+  }
+  .panel:last-child { border-right: none; }
+  .panel .img-wrap {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .panel img {
+    max-width: 100%;
+    max-height: 100%;
+    image-rendering: pixelated;
+    transform-origin: center center;
+    transition: filter 0.05s linear;
+    pointer-events: none;
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+  .panel .label {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    color: var(--accent);
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    background: rgba(0,0,0,0.6);
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    z-index: 5;
+  }
+  .panel .slice-num {
+    position: absolute;
+    bottom: 8px;
+    right: 8px;
+    color: var(--muted);
+    font-size: 11px;
+    background: rgba(0,0,0,0.6);
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    z-index: 5;
+  }
+  .panel .reference-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 5;
+  }
+  .scanlines {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      0deg,
+      rgba(255,255,255,0.03) 0px,
+      rgba(255,255,255,0.03) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    z-index: 4;
+  }
+
+  /* Heatmap strip */
+  #heatmap {
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    position: relative;
+    cursor: pointer;
+    overflow: hidden;
+  }
+  #heatmap canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  #heatmap .pos {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--accent);
+    pointer-events: none;
+    box-shadow: 0 0 4px var(--accent);
+  }
+
+  /* Bottom bar */
+  #bottombar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 16px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+  }
+  #bottombar button {
+    width: 32px;
+    padding: 6px 0;
+    text-align: center;
+  }
+  #slider-container {
+    flex: 1;
+    position: relative;
+    height: 32px;
+    display: flex;
+    align-items: center;
+  }
+  #slider {
+    width: 100%;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    background: var(--border);
+    outline: none;
+    margin: 0;
+    position: relative;
+    z-index: 2;
+  }
+  #slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    background: var(--accent);
+    cursor: pointer;
+    border: none;
+  }
+  #slider::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    background: var(--accent);
+    cursor: pointer;
+    border: none;
+  }
+  #slider-marks {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    right: 0;
+    height: 16px;
+    transform: translateY(-50%);
+    pointer-events: none;
+    z-index: 1;
+  }
+  #slider-marks .mark {
+    position: absolute;
+    top: 0;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    transform: translate(-50%, 0);
+  }
+  #slider-marks .mark.warn { background: var(--warn); top: -2px; }
+  #slider-marks .mark.danger { background: var(--danger); top: -2px; }
+  #counter { color: var(--muted); min-width: 120px; text-align: right; }
+
+  /* Notable panel (modal) */
+  #notable, #help {
+    position: fixed;
+    top: 60px;
+    right: 16px;
+    width: 280px;
+    max-height: 70vh;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 16px;
+    z-index: 100;
+    display: none;
+    overflow-y: auto;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.6);
+  }
+  #notable.show, #help.show { display: block; }
+  #notable h3, #help h3 {
+    margin: 0 0 12px 0;
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+  #notable .item {
+    padding: 6px 8px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  #notable .item:hover { color: var(--accent); }
+  #notable .item .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  #notable .item .dot.warn { background: var(--warn); }
+  #notable .item .dot.danger { background: var(--danger); }
+  #help kbd {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    padding: 2px 6px;
+    color: var(--accent);
+    font-family: inherit;
+    font-size: 11px;
+  }
+  #help .row {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+    gap: 12px;
+  }
+  #help .row .desc { color: var(--muted); }
+
+  #status {
+    position: fixed;
+    bottom: 70px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 8px 16px;
+    color: var(--accent);
+    z-index: 200;
+    display: none;
+  }
+  #status.show { display: block; }
+
+  #loading {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 16px;
+    z-index: 1000;
+    color: var(--accent);
+    letter-spacing: 2px;
+  }
+  #loading .bar {
+    width: 240px;
+    height: 2px;
+    background: var(--border);
+    overflow: hidden;
+  }
+  #loading .bar div {
+    height: 100%;
+    background: var(--accent);
+    width: 0%;
+    transition: width 0.2s;
+  }
+  #loading.hidden { display: none; }
+
+  #error {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 12px;
+    z-index: 1001;
+    color: var(--danger);
+    padding: 24px;
+    text-align: center;
+  }
+  #error.show { display: flex; }
+  #error code {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    color: var(--text);
+  }
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <div>LOADING SLICES…</div>
+  <div class="bar"><div id="loadbar"></div></div>
+  <div id="loadtext" style="color: var(--muted); font-size: 11px;">0 / 0</div>
+</div>
+
+<div id="error">
+  <div style="font-size: 16px; letter-spacing: 2px;">NO SLICES FOUND</div>
+  <div style="color: var(--muted);">Run the converter first:</div>
+  <code>python convert_dicoms.py</code>
+  <div style="color: var(--muted); font-size: 11px;">
+    Make sure ./slices/metadata.json exists.
+  </div>
+</div>
+
+<div id="app">
+
+  <div id="topbar">
+    <div class="left">
+      <button id="btn-compare" title="Compare mode (C)">Compare</button>
+      <button id="btn-notable" title="Notable slices">Notable</button>
+      <button id="btn-info" title="Toggle info panel (I)">Info</button>
+      <button id="btn-help" title="Help (?)">?</button>
+    </div>
+    <div class="right">
+      <span class="title">MRI VIEWER</span>
+      <span class="counter">Slice <span id="counter-top">0</span> / <span id="counter-total">0</span></span>
+    </div>
+  </div>
+
+  <div id="main">
+    <aside id="info">
+      <h3>Metadata</h3>
+      <div id="info-rows"></div>
+    </aside>
+
+    <div id="canvas">
+      <div class="panel" id="panel-main">
+        <div class="img-wrap"><img id="img-main" alt=""></div>
+        <div class="scanlines"></div>
+        <div class="slice-num" id="slice-num-main">—</div>
+      </div>
+      <div class="panel" id="panel-ref" style="display:none;">
+        <div class="label">REF</div>
+        <button class="reference-btn" id="btn-set-ref">Set Reference</button>
+        <div class="img-wrap"><img id="img-ref" alt=""></div>
+        <div class="scanlines"></div>
+        <div class="slice-num" id="slice-num-ref">—</div>
+      </div>
+    </div>
+
+    <div id="heatmap">
+      <canvas id="heatmap-canvas"></canvas>
+      <div class="pos" id="heatmap-pos"></div>
+    </div>
+  </div>
+
+  <div id="bottombar">
+    <button id="btn-prev" title="Previous slice (↑)">&lt;</button>
+    <div id="slider-container">
+      <div id="slider-marks"></div>
+      <input type="range" id="slider" min="0" max="0" value="0" step="1">
+    </div>
+    <button id="btn-next" title="Next slice (↓)">&gt;</button>
+    <div id="counter">Slice <span id="counter-bottom">0</span> / <span id="counter-total-bottom">0</span></div>
+  </div>
+
+</div>
+
+<div id="notable">
+  <h3>Notable Slices</h3>
+  <div id="notable-list"></div>
+</div>
+
+<div id="help">
+  <h3>Keyboard</h3>
+  <div class="row"><span><kbd>↑</kbd> / <kbd>↓</kbd></span><span class="desc">Prev / Next slice</span></div>
+  <div class="row"><span>Wheel</span><span class="desc">Scroll slices</span></div>
+  <div class="row"><span><kbd>Ctrl</kbd>+Wheel</span><span class="desc">Zoom</span></div>
+  <div class="row"><span><kbd>Alt</kbd>+Drag</span><span class="desc">Pan</span></div>
+  <div class="row"><span>Drag</span><span class="desc">Brightness / Contrast</span></div>
+  <div class="row"><span><kbd>R</kbd></span><span class="desc">Reset view</span></div>
+  <div class="row"><span><kbd>I</kbd></span><span class="desc">Toggle info</span></div>
+  <div class="row"><span><kbd>C</kbd></span><span class="desc">Compare mode</span></div>
+  <div class="row"><span><kbd>?</kbd></span><span class="desc">Toggle help</span></div>
+</div>
+
+<div id="status"></div>
+
+<script>
+'use strict';
+
+const state = {
+  currentSlice: 0,
+  totalSlices: 0,
+  zoom: 1,
+  panX: 0,
+  panY: 0,
+  brightness: 100,
+  contrast: 100,
+  compareMode: false,
+  referenceSlice: 0,
+  metadata: {},
+  sliceBrightness: [],
+};
+
+const PRELOAD_RADIUS = 20;
+const imageCache = new Map();
+
+const slicePath = n => `./slices/slice_${String(n + 1).padStart(4, '0')}.png`;
+
+function showStatus(msg, ms = 1500) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(showStatus._t);
+  showStatus._t = setTimeout(() => el.classList.remove('show'), ms);
+}
+
+function loadImage(idx) {
+  if (idx < 0 || idx >= state.totalSlices) return Promise.resolve(null);
+  if (imageCache.has(idx)) return Promise.resolve(imageCache.get(idx));
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => { imageCache.set(idx, img); resolve(img); };
+    img.onerror = () => resolve(null);
+    img.src = slicePath(idx);
+  });
+}
+
+function preload(center) {
+  for (let off = -PRELOAD_RADIUS; off <= PRELOAD_RADIUS; off++) {
+    const i = center + off;
+    if (i >= 0 && i < state.totalSlices && !imageCache.has(i)) {
+      loadImage(i);
+    }
+  }
+  if (imageCache.size > 200) {
+    const keep = new Set();
+    for (let off = -PRELOAD_RADIUS; off <= PRELOAD_RADIUS; off++) keep.add(center + off);
+    for (const k of imageCache.keys()) if (!keep.has(k)) imageCache.delete(k);
+  }
+}
+
+function applyTransform(img) {
+  img.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
+  img.style.filter = `brightness(${state.brightness}%) contrast(${state.contrast}%)`;
+}
+
+async function showSlice(idx) {
+  idx = Math.max(0, Math.min(state.totalSlices - 1, idx));
+  state.currentSlice = idx;
+
+  const img = await loadImage(idx);
+  const mainImg = document.getElementById('img-main');
+  if (img) {
+    mainImg.src = img.src;
+  }
+  applyTransform(mainImg);
+
+  document.getElementById('counter-top').textContent = idx + 1;
+  document.getElementById('counter-bottom').textContent = idx + 1;
+  document.getElementById('slice-num-main').textContent = `${idx + 1} / ${state.totalSlices}`;
+  document.getElementById('slider').value = idx;
+  updateHeatmapPos();
+
+  preload(idx);
+}
+
+async function showReference(idx) {
+  state.referenceSlice = idx;
+  const img = await loadImage(idx);
+  const refImg = document.getElementById('img-ref');
+  if (img) refImg.src = img.src;
+  applyTransform(refImg);
+  document.getElementById('slice-num-ref').textContent = `${idx + 1} / ${state.totalSlices}`;
+}
+
+function applyTransformAll() {
+  applyTransform(document.getElementById('img-main'));
+  applyTransform(document.getElementById('img-ref'));
+}
+
+function resetView() {
+  state.zoom = 1;
+  state.panX = 0;
+  state.panY = 0;
+  state.brightness = 100;
+  state.contrast = 100;
+  applyTransformAll();
+  showStatus('VIEW RESET');
+}
+
+function toggleCompare() {
+  state.compareMode = !state.compareMode;
+  document.getElementById('panel-ref').style.display = state.compareMode ? 'block' : 'none';
+  document.getElementById('btn-compare').classList.toggle('active', state.compareMode);
+  if (state.compareMode) {
+    showReference(state.currentSlice);
+    showStatus('COMPARE ON');
+  } else {
+    showStatus('COMPARE OFF');
+  }
+}
+
+function toggleInfo() {
+  document.getElementById('main').classList.toggle('no-info');
+  const showing = !document.getElementById('main').classList.contains('no-info');
+  document.getElementById('btn-info').classList.toggle('active', showing);
+}
+
+function toggleNotable() {
+  const el = document.getElementById('notable');
+  el.classList.toggle('show');
+  document.getElementById('btn-notable').classList.toggle('active', el.classList.contains('show'));
+}
+
+function toggleHelp() {
+  const el = document.getElementById('help');
+  el.classList.toggle('show');
+  document.getElementById('btn-help').classList.toggle('active', el.classList.contains('show'));
+}
+
+/* ---------- Metadata ---------- */
+
+function renderMetadata(md) {
+  const labels = {
+    total_slices: 'Total Slices',
+    patient_id: 'Patient ID',
+    study_description: 'Study',
+    series_description: 'Series',
+    modality: 'Modality',
+    slice_thickness: 'Slice Thick.',
+    pixel_spacing: 'Pixel Spacing',
+    rows: 'Rows',
+    cols: 'Cols',
+    window_center: 'Win. Center',
+    window_width: 'Win. Width',
+  };
+  const rows = document.getElementById('info-rows');
+  rows.innerHTML = '';
+  for (const k of Object.keys(labels)) {
+    const div = document.createElement('div');
+    div.className = 'row';
+    const v = md[k];
+    div.innerHTML = `<span class="k">${labels[k]}</span><span class="v">${
+      v === null || v === undefined || v === '' ? '—' : String(v)
+    }</span>`;
+    rows.appendChild(div);
+  }
+}
+
+/* ---------- Brightness sampling for heatmap / notable ---------- */
+
+async function sampleBrightness() {
+  const offCanvas = document.createElement('canvas');
+  offCanvas.width = 32;
+  offCanvas.height = 32;
+  const ctx = offCanvas.getContext('2d', { willReadFrequently: true });
+  const out = new Float32Array(state.totalSlices);
+
+  const loadbar = document.getElementById('loadbar');
+  const loadtext = document.getElementById('loadtext');
+
+  const concurrency = 8;
+  let nextIdx = 0;
+  let completed = 0;
+
+  async function worker() {
+    while (true) {
+      const i = nextIdx++;
+      if (i >= state.totalSlices) return;
+      const img = await loadImage(i);
+      if (img) {
+        try {
+          ctx.clearRect(0, 0, 32, 32);
+          ctx.drawImage(img, 0, 0, 32, 32);
+          const data = ctx.getImageData(0, 0, 32, 32).data;
+          let sum = 0;
+          for (let p = 0; p < data.length; p += 4) sum += data[p];
+          out[i] = sum / (32 * 32);
+        } catch (_) {
+          out[i] = 0;
+        }
+      }
+      completed++;
+      const pct = Math.round((completed / state.totalSlices) * 100);
+      loadbar.style.width = pct + '%';
+      loadtext.textContent = `${completed} / ${state.totalSlices}`;
+      // Drop from cache if outside preload window of slice 0 to save memory
+      if (Math.abs(i - 0) > PRELOAD_RADIUS) imageCache.delete(i);
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, worker));
+  state.sliceBrightness = Array.from(out);
+}
+
+function computeNotables() {
+  const arr = state.sliceBrightness.slice();
+  const sorted = arr.slice().sort((a, b) => a - b);
+  const total = sorted.length;
+  if (total === 0) return { warn: [], danger: [] };
+  const t85 = sorted[Math.floor(total * 0.85)];
+  const t95 = sorted[Math.floor(total * 0.95)];
+  const warn = [];
+  const danger = [];
+  arr.forEach((v, i) => {
+    if (v >= t95) danger.push(i);
+    else if (v >= t85) warn.push(i);
+  });
+  return { warn, danger };
+}
+
+function renderSliderMarks(notables) {
+  const cont = document.getElementById('slider-marks');
+  cont.innerHTML = '';
+  const total = state.totalSlices;
+  if (total <= 1) return;
+  const place = (i, cls) => {
+    const m = document.createElement('div');
+    m.className = 'mark ' + cls;
+    m.style.left = ((i / (total - 1)) * 100) + '%';
+    cont.appendChild(m);
+  };
+  notables.warn.forEach(i => place(i, 'warn'));
+  notables.danger.forEach(i => place(i, 'danger'));
+}
+
+function renderNotableList(notables) {
+  const list = document.getElementById('notable-list');
+  list.innerHTML = '';
+  const items = [
+    ...notables.danger.map(i => ({ i, cls: 'danger', label: 'High' })),
+    ...notables.warn.map(i => ({ i, cls: 'warn', label: 'Notable' })),
+  ].sort((a, b) => a.i - b.i);
+  if (items.length === 0) {
+    list.innerHTML = `<div style="color: var(--muted); padding: 6px 0;">None flagged.</div>`;
+    return;
+  }
+  for (const { i, cls, label } of items) {
+    const d = document.createElement('div');
+    d.className = 'item';
+    d.innerHTML = `<span class="dot ${cls}"></span><span>Slice ${i + 1}</span><span style="color: var(--muted); margin-left: auto;">${label}</span>`;
+    d.addEventListener('click', () => showSlice(i));
+    list.appendChild(d);
+  }
+}
+
+function renderHeatmap() {
+  const canvas = document.getElementById('heatmap-canvas');
+  const cssW = canvas.clientWidth || 80;
+  const cssH = canvas.clientHeight || 400;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.floor(cssW * dpr);
+  canvas.height = Math.floor(cssH * dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, cssW, cssH);
+  const total = state.totalSlices;
+  if (!total) return;
+  const arr = state.sliceBrightness;
+  const mn = Math.min(...arr);
+  const mx = Math.max(...arr);
+  const span = Math.max(mx - mn, 1);
+  for (let i = 0; i < total; i++) {
+    const t = (arr[i] - mn) / span;
+    const y = (i / total) * cssH;
+    const h = Math.max(cssH / total, 1);
+    const r = Math.round(t * 255);
+    const g = Math.round(t * 180);
+    const b = Math.round(40 + (1 - t) * 100);
+    ctx.fillStyle = `rgb(${r},${g},${b})`;
+    ctx.fillRect(0, y, cssW, h + 0.5);
+  }
+}
+
+function updateHeatmapPos() {
+  const total = state.totalSlices;
+  if (!total) return;
+  const heat = document.getElementById('heatmap');
+  const pos = document.getElementById('heatmap-pos');
+  const h = heat.clientHeight;
+  pos.style.top = ((state.currentSlice / Math.max(total - 1, 1)) * h) + 'px';
+}
+
+/* ---------- Input handlers ---------- */
+
+function setupInput() {
+  const canvas = document.getElementById('canvas');
+
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    if (e.ctrlKey) {
+      const delta = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      state.zoom = Math.max(0.2, Math.min(8, state.zoom * delta));
+      applyTransformAll();
+    } else {
+      const dir = e.deltaY > 0 ? 1 : -1;
+      showSlice(state.currentSlice + dir);
+    }
+  }, { passive: false });
+
+  let dragging = null;
+  canvas.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    dragging = {
+      mode: e.altKey ? 'pan' : 'level',
+      startX: e.clientX,
+      startY: e.clientY,
+      startBright: state.brightness,
+      startContrast: state.contrast,
+      startPanX: state.panX,
+      startPanY: state.panY,
+    };
+  });
+
+  window.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const dx = e.clientX - dragging.startX;
+    const dy = e.clientY - dragging.startY;
+    if (dragging.mode === 'pan') {
+      state.panX = dragging.startPanX + dx;
+      state.panY = dragging.startPanY + dy;
+    } else {
+      state.contrast = Math.max(10, Math.min(400, dragging.startContrast + dx * 0.5));
+      state.brightness = Math.max(10, Math.min(400, dragging.startBright - dy * 0.5));
+    }
+    applyTransformAll();
+  });
+
+  window.addEventListener('mouseup', () => { dragging = null; });
+
+  canvas.addEventListener('dblclick', resetView);
+
+  /* Heatmap click + hover */
+  const heat = document.getElementById('heatmap');
+  const heatJump = e => {
+    const rect = heat.getBoundingClientRect();
+    const t = (e.clientY - rect.top) / rect.height;
+    const i = Math.round(t * (state.totalSlices - 1));
+    showSlice(i);
+  };
+  heat.addEventListener('click', heatJump);
+  let heatDragging = false;
+  heat.addEventListener('mousedown', e => { heatDragging = true; heatJump(e); });
+  window.addEventListener('mouseup', () => { heatDragging = false; });
+  heat.addEventListener('mousemove', e => { if (heatDragging) heatJump(e); });
+
+  /* Slider */
+  const slider = document.getElementById('slider');
+  slider.addEventListener('input', () => showSlice(parseInt(slider.value, 10)));
+
+  /* Buttons */
+  document.getElementById('btn-prev').addEventListener('click', () => showSlice(state.currentSlice - 1));
+  document.getElementById('btn-next').addEventListener('click', () => showSlice(state.currentSlice + 1));
+  document.getElementById('btn-compare').addEventListener('click', toggleCompare);
+  document.getElementById('btn-notable').addEventListener('click', toggleNotable);
+  document.getElementById('btn-info').addEventListener('click', toggleInfo);
+  document.getElementById('btn-help').addEventListener('click', toggleHelp);
+  document.getElementById('btn-set-ref').addEventListener('click', e => {
+    e.stopPropagation();
+    showReference(state.currentSlice);
+    showStatus(`REF SET → SLICE ${state.currentSlice + 1}`);
+  });
+
+  /* Keyboard */
+  window.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT') return;
+    switch (e.key) {
+      case 'ArrowUp':    e.preventDefault(); showSlice(state.currentSlice - 1); break;
+      case 'ArrowDown':  e.preventDefault(); showSlice(state.currentSlice + 1); break;
+      case 'ArrowLeft':  e.preventDefault(); showSlice(state.currentSlice - 1); break;
+      case 'ArrowRight': e.preventDefault(); showSlice(state.currentSlice + 1); break;
+      case 'r': case 'R': resetView(); break;
+      case 'i': case 'I': toggleInfo(); break;
+      case 'c': case 'C': toggleCompare(); break;
+      case '?': case '/': toggleHelp(); break;
+    }
+  });
+
+  window.addEventListener('resize', () => {
+    renderHeatmap();
+    updateHeatmapPos();
+  });
+
+  /* Prevent native page scroll over canvas */
+  canvas.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+}
+
+/* ---------- Boot ---------- */
+
+async function boot() {
+  let md;
+  try {
+    const res = await fetch('./slices/metadata.json', { cache: 'no-store' });
+    if (!res.ok) throw new Error('metadata.json missing');
+    md = await res.json();
+  } catch (_) {
+    document.getElementById('loading').classList.add('hidden');
+    document.getElementById('error').classList.add('show');
+    return;
+  }
+
+  state.metadata = md;
+  state.totalSlices = md.total_slices || 0;
+
+  if (state.totalSlices <= 0) {
+    document.getElementById('loading').classList.add('hidden');
+    document.getElementById('error').classList.add('show');
+    return;
+  }
+
+  document.getElementById('counter-total').textContent = state.totalSlices;
+  document.getElementById('counter-total-bottom').textContent = state.totalSlices;
+  document.getElementById('slider').max = state.totalSlices - 1;
+
+  renderMetadata(md);
+  setupInput();
+
+  await sampleBrightness();
+  const notables = computeNotables();
+  renderSliderMarks(notables);
+  renderNotableList(notables);
+  renderHeatmap();
+
+  await showSlice(0);
+  document.getElementById('btn-info').classList.add('active');
+
+  document.getElementById('loading').classList.add('hidden');
+}
+
+boot();
+</script>
+</body>
+</html>
