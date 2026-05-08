@@ -823,9 +823,39 @@ async function parseFolder(files) {
       const windowed = applyWindow(pixels, center, width, invert);
       const instanceNumber = parseInt(dataSet.string('x00200013') || '0', 10) || 0;
 
+      // Compute physical slice position for ordering. Prefer the projection of
+      // ImagePositionPatient onto the slice normal (ImageOrientationPatient × ).
+      // Fall back to SliceLocation, then InstanceNumber.
+      let slicePos = null;
+      const ipp = dataSet.string('x00200032');
+      const iop = dataSet.string('x00200037');
+      if (ipp) {
+        const p = ipp.split('\\').map(Number);
+        if (p.length >= 3 && p.every(v => !isNaN(v))) {
+          if (iop) {
+            const o = iop.split('\\').map(Number);
+            if (o.length >= 6 && o.every(v => !isNaN(v))) {
+              const nx = o[1] * o[5] - o[2] * o[4];
+              const ny = o[2] * o[3] - o[0] * o[5];
+              const nz = o[0] * o[4] - o[1] * o[3];
+              slicePos = p[0] * nx + p[1] * ny + p[2] * nz;
+            }
+          }
+          if (slicePos === null) slicePos = p[2];
+        }
+      }
+      if (slicePos === null) {
+        const sl = dataSet.floatString('x00201041');
+        if (typeof sl === 'number' && !isNaN(sl)) slicePos = sl;
+      }
+
+      const echoTime = dataSet.floatString('x00180081');
+
       slices.push({
         rows, cols, windowed,
         instanceNumber,
+        slicePos,
+        echoTime: (typeof echoTime === 'number' && !isNaN(echoTime)) ? echoTime : null,
         brightness: meanBrightness(windowed),
         name: file.name,
       });
@@ -871,12 +901,46 @@ async function parseFolder(files) {
     return;
   }
 
+  // Sort by physical slice position when available (most reliable). Then by
+  // echo time so multi-echo series stay grouped per slice. InstanceNumber and
+  // filename are last-resort tiebreakers.
+  const havePos = slices.some(s => s.slicePos !== null);
   slices.sort((a, b) => {
-    const ai = a.instanceNumber || 0;
-    const bi = b.instanceNumber || 0;
-    if (ai !== bi) return ai - bi;
+    if (havePos) {
+      const ap = a.slicePos, bp = b.slicePos;
+      if (ap !== null && bp !== null && ap !== bp) return ap - bp;
+      if (ap !== null && bp === null) return -1;
+      if (ap === null && bp !== null) return 1;
+    }
+    if (a.echoTime !== null && b.echoTime !== null && a.echoTime !== b.echoTime) {
+      return a.echoTime - b.echoTime;
+    }
+    if (a.instanceNumber !== b.instanceNumber) return a.instanceNumber - b.instanceNumber;
     return a.name.localeCompare(b.name);
   });
+
+  // Detect multi-echo / mixed series: count distinct slice positions and
+  // average spacing for the metadata panel so the user can tell what they got.
+  let sortInfo = `Position (${slices.length})`;
+  if (havePos) {
+    const positions = slices.map(s => s.slicePos).filter(v => v !== null).sort((a, b) => a - b);
+    const unique = [];
+    const eps = 0.01;
+    for (const p of positions) {
+      if (unique.length === 0 || Math.abs(unique[unique.length - 1] - p) > eps) unique.push(p);
+    }
+    const echoes = slices.length / Math.max(unique.length, 1);
+    if (unique.length > 1) {
+      const spacings = [];
+      for (let i = 1; i < unique.length; i++) spacings.push(unique[i] - unique[i - 1]);
+      const avgSpacing = spacings.reduce((a, b) => a + b, 0) / spacings.length;
+      sortInfo = `${unique.length} positions · ${avgSpacing.toFixed(2)}mm`;
+      if (echoes >= 1.5) sortInfo += ` · ${Math.round(echoes)} echoes/pos`;
+    }
+  } else {
+    sortInfo = `Instance order (no position tags)`;
+  }
+  firstMeta.slice_order = sortInfo;
 
   state.slices = slices;
   state.totalSlices = slices.length;
@@ -1021,6 +1085,7 @@ function toggleHelp() {
 function renderMetadata(md) {
   const labels = {
     total_slices: 'Total Slices',
+    slice_order: 'Slice Order',
     patient_id: 'Patient ID',
     study_description: 'Study',
     series_description: 'Series',
