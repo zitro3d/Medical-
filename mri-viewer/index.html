@@ -1,0 +1,1457 @@
+<!DOCTYPE html>
+<!--
+  MRI VIEWER — single file, no server, no install.
+
+  USAGE:
+    1. Save this file anywhere on disk.
+    2. Double-click to open in a browser (Chrome, Edge, Firefox).
+    3. Drag a folder of .dcm files onto the window — or click "Pick Folder".
+
+  No internet, no install, no server. The DICOM parser (dicom-parser) is
+  bundled inside this file.
+
+  PRIVACY: Patient identifiers are never displayed and never leave your
+  machine. All parsing happens locally in the browser.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MRI Viewer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --surface: #141414;
+    --border: #2a2a2a;
+    --accent: #00e5ff;
+    --warn: #ffcc00;
+    --danger: #ff3b3b;
+    --text: #e8e8e8;
+    --muted: #666666;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 13px;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  button {
+    font-family: inherit;
+    font-size: 12px;
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 12px;
+    cursor: pointer;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.active { border-color: var(--accent); color: var(--accent); }
+
+  /* Drop screen */
+  #drop {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 24px;
+    background: var(--bg);
+    z-index: 900;
+    transition: background 0.15s;
+  }
+  #drop.over { background: #08191c; }
+  #drop .frame {
+    border: 1px dashed var(--border);
+    padding: 48px 64px;
+    text-align: center;
+    transition: border-color 0.15s;
+  }
+  #drop.over .frame { border-color: var(--accent); }
+  #drop .title {
+    color: var(--accent);
+    letter-spacing: 4px;
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 16px;
+  }
+  #drop .hint { color: var(--muted); margin-bottom: 24px; }
+  #drop .or { color: var(--muted); font-size: 11px; margin: 16px 0; }
+  #drop .err { color: var(--danger); font-size: 11px; margin-top: 16px; }
+  #drop input[type=file] { display: none; }
+
+  /* App (hidden until parse done) */
+  #app {
+    display: none;
+    grid-template-rows: 44px 1fr 56px;
+    height: 100vh;
+  }
+  #app.show { display: grid; }
+
+  #topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  #topbar .left { display: flex; gap: 8px; }
+  #topbar .right { display: flex; align-items: center; gap: 16px; color: var(--muted); }
+  #topbar .title { color: var(--accent); letter-spacing: 2px; font-weight: 700; }
+  #topbar .counter { color: var(--text); }
+
+  #main {
+    display: grid;
+    grid-template-columns: 280px 1fr 80px;
+    overflow: hidden;
+    min-height: 0;
+  }
+  #main.no-info { grid-template-columns: 0 1fr 80px; }
+
+  #info {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 16px;
+    overflow-y: auto;
+  }
+  #info h3 {
+    margin: 0 0 12px 0;
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+  #info .row {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+    gap: 8px;
+  }
+  #info .row .k { color: var(--muted); }
+  #info .row .v { color: var(--text); text-align: right; word-break: break-word; }
+  #main.no-info #info { display: none; }
+
+  #series-section { margin-bottom: 20px; }
+  #series-section.hidden { display: none; }
+  #series-list { display: flex; flex-direction: column; gap: 4px; }
+  .series-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    background: var(--bg);
+  }
+  .series-item:hover { border-color: var(--accent); }
+  .series-item.active { border-color: var(--accent); background: rgba(0, 229, 255, 0.06); }
+  .series-item canvas {
+    width: 48px;
+    height: 48px;
+    background: #000;
+    image-rendering: pixelated;
+    flex-shrink: 0;
+    object-fit: contain;
+  }
+  .series-item .si-info { flex: 1; min-width: 0; overflow: hidden; }
+  .series-item .si-desc {
+    color: var(--text);
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .series-item.active .si-desc { color: var(--accent); }
+  .series-item .si-sub { color: var(--muted); font-size: 10px; margin-top: 2px; }
+
+  #canvas-area {
+    position: relative;
+    background: #000;
+    overflow: hidden;
+    display: flex;
+  }
+  .panel {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+    border-right: 1px solid var(--border);
+  }
+  .panel:last-child { border-right: none; }
+  .panel .img-wrap {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .panel canvas {
+    max-width: 100%;
+    max-height: 100%;
+    image-rendering: pixelated;
+    transform-origin: center center;
+    transition: filter 0.05s linear;
+  }
+  .panel .label {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    color: var(--accent);
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    background: rgba(0,0,0,0.6);
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    z-index: 5;
+  }
+  .panel .slice-num {
+    position: absolute;
+    bottom: 8px;
+    right: 8px;
+    color: var(--muted);
+    font-size: 11px;
+    background: rgba(0,0,0,0.6);
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    z-index: 5;
+  }
+  .panel .reference-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 5;
+  }
+  .scanlines {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      0deg,
+      rgba(255,255,255,0.03) 0px,
+      rgba(255,255,255,0.03) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    z-index: 4;
+  }
+
+  #heatmap {
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    position: relative;
+    cursor: pointer;
+    overflow: hidden;
+  }
+  #heatmap canvas { width: 100%; height: 100%; display: block; }
+  #heatmap .pos {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--accent);
+    pointer-events: none;
+    box-shadow: 0 0 4px var(--accent);
+  }
+
+  #bottombar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 16px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+  }
+  #bottombar button { width: 32px; padding: 6px 0; text-align: center; }
+  #slider-container {
+    flex: 1;
+    position: relative;
+    height: 32px;
+    display: flex;
+    align-items: center;
+  }
+  #slider {
+    width: 100%;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    background: var(--border);
+    outline: none;
+    margin: 0;
+    position: relative;
+    z-index: 2;
+  }
+  #slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    background: var(--accent);
+    cursor: pointer;
+    border: none;
+  }
+  #slider::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    background: var(--accent);
+    cursor: pointer;
+    border: none;
+  }
+  #slider-marks {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    right: 0;
+    height: 16px;
+    transform: translateY(-50%);
+    pointer-events: none;
+    z-index: 1;
+  }
+  #slider-marks .mark {
+    position: absolute;
+    top: 0;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    transform: translate(-50%, 0);
+  }
+  #slider-marks .mark.warn { background: var(--warn); top: -2px; }
+  #slider-marks .mark.danger { background: var(--danger); top: -2px; }
+  #counter { color: var(--muted); min-width: 120px; text-align: right; }
+
+  #notable, #help {
+    position: fixed;
+    top: 60px;
+    right: 16px;
+    width: 280px;
+    max-height: 70vh;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 16px;
+    z-index: 100;
+    display: none;
+    overflow-y: auto;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.6);
+  }
+  #notable.show, #help.show { display: block; }
+  #notable h3, #help h3 {
+    margin: 0 0 12px 0;
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+  #notable .item {
+    padding: 6px 8px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  #notable .item:hover { color: var(--accent); }
+  #notable .item .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  #notable .item .dot.warn { background: var(--warn); }
+  #notable .item .dot.danger { background: var(--danger); }
+  #help kbd {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    padding: 2px 6px;
+    color: var(--accent);
+    font-family: inherit;
+    font-size: 11px;
+  }
+  #help .row {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+    gap: 12px;
+  }
+  #help .row .desc { color: var(--muted); }
+
+  #status {
+    position: fixed;
+    bottom: 70px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 8px 16px;
+    color: var(--accent);
+    z-index: 200;
+    display: none;
+  }
+  #status.show { display: block; }
+
+  #progress {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 16px;
+    z-index: 1000;
+    color: var(--accent);
+    letter-spacing: 2px;
+  }
+  #progress.show { display: flex; }
+  #progress .bar {
+    width: 320px;
+    height: 2px;
+    background: var(--border);
+    overflow: hidden;
+  }
+  #progress .bar div {
+    height: 100%;
+    background: var(--accent);
+    width: 0%;
+    transition: width 0.1s;
+  }
+  #progress .label { color: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body>
+
+<!-- Drop screen -->
+<div id="drop">
+  <div class="frame">
+    <div class="title">MRI VIEWER</div>
+    <div class="hint">Drag a folder of <code>.dcm</code> files anywhere on this window</div>
+    <div class="or">— OR —</div>
+    <button id="pick-btn">Pick Folder</button>
+    <input type="file" id="picker" webkitdirectory directory multiple>
+    <div class="err" id="drop-err"></div>
+  </div>
+</div>
+
+<!-- Parse progress -->
+<div id="progress">
+  <div>PARSING DICOM…</div>
+  <div class="bar"><div id="progbar"></div></div>
+  <div class="label" id="progtext">0 / 0</div>
+</div>
+
+<!-- Viewer -->
+<div id="app">
+  <div id="topbar">
+    <div class="left">
+      <button id="btn-compare" title="Compare mode (C)">Compare</button>
+      <button id="btn-notable" title="Notable slices">Notable</button>
+      <button id="btn-info" title="Toggle info panel (I)">Info</button>
+      <button id="btn-help" title="Help (?)">?</button>
+      <button id="btn-reload" title="Load a different folder">New Folder</button>
+    </div>
+    <div class="right">
+      <span class="title">MRI VIEWER</span>
+      <span class="counter">Slice <span id="counter-top">0</span> / <span id="counter-total">0</span></span>
+    </div>
+  </div>
+
+  <div id="main">
+    <aside id="info">
+      <div id="series-section">
+        <h3>Series</h3>
+        <div id="series-list"></div>
+      </div>
+      <h3>Metadata</h3>
+      <div id="info-rows"></div>
+    </aside>
+
+    <div id="canvas-area">
+      <div class="panel" id="panel-ref" style="display:none;">
+        <div class="label">REF</div>
+        <button class="reference-btn" id="btn-set-ref">Set Reference</button>
+        <div class="img-wrap"><canvas id="canvas-ref"></canvas></div>
+        <div class="scanlines"></div>
+        <div class="slice-num" id="slice-num-ref">—</div>
+      </div>
+      <div class="panel" id="panel-main">
+        <div class="img-wrap"><canvas id="canvas-main"></canvas></div>
+        <div class="scanlines"></div>
+        <div class="slice-num" id="slice-num-main">—</div>
+      </div>
+    </div>
+
+    <div id="heatmap">
+      <canvas id="heatmap-canvas"></canvas>
+      <div class="pos" id="heatmap-pos"></div>
+    </div>
+  </div>
+
+  <div id="bottombar">
+    <button id="btn-prev" title="Previous slice (↑)">&lt;</button>
+    <div id="slider-container">
+      <div id="slider-marks"></div>
+      <input type="range" id="slider" min="0" max="0" value="0" step="1">
+    </div>
+    <button id="btn-next" title="Next slice (↓)">&gt;</button>
+    <div id="counter">Slice <span id="counter-bottom">0</span> / <span id="counter-total-bottom">0</span></div>
+  </div>
+</div>
+
+<div id="notable">
+  <h3>Notable Slices</h3>
+  <div id="notable-list"></div>
+</div>
+
+<div id="help">
+  <h3>Keyboard</h3>
+  <div class="row"><span><kbd>↑</kbd> / <kbd>↓</kbd></span><span class="desc">Prev / Next slice</span></div>
+  <div class="row"><span>Wheel</span><span class="desc">Scroll slices</span></div>
+  <div class="row"><span><kbd>Ctrl</kbd>+Wheel</span><span class="desc">Zoom</span></div>
+  <div class="row"><span><kbd>Alt</kbd>+Drag</span><span class="desc">Pan</span></div>
+  <div class="row"><span>Drag</span><span class="desc">Brightness / Contrast</span></div>
+  <div class="row"><span><kbd>R</kbd></span><span class="desc">Reset view</span></div>
+  <div class="row"><span><kbd>I</kbd></span><span class="desc">Toggle info</span></div>
+  <div class="row"><span><kbd>C</kbd></span><span class="desc">Compare mode</span></div>
+  <div class="row"><span><kbd>?</kbd></span><span class="desc">Toggle help</span></div>
+</div>
+
+<div id="status"></div>
+
+<!-- Bundled DICOM tag parser (dicom-parser, MIT) -->
+<script>
+/*! dicom-parser - 1.8.12 - 2023-02-20 | (c) 2017 Chris Hafey | https://github.com/cornerstonejs/dicomParser */
+!function(e,t){"object"==typeof exports&&"object"==typeof module?module.exports=t(require("zlib")):"function"==typeof define&&define.amd?define("dicom-parser",["zlib"],t):"object"==typeof exports?exports["dicom-parser"]=t(require("zlib")):e.dicomParser=t(e.zlib)}(this,function(r){return a=[function(e,t){e.exports=r},function(e,t,s){"use strict";s.r(t),s.d(t,"isStringVr",function(){return d}),s.d(t,"isPrivateTag",function(){return f}),s.d(t,"parsePN",function(){return a}),s.d(t,"parseTM",function(){return n}),s.d(t,"parseDA",function(){return o}),s.d(t,"explicitElementToString",function(){return l}),s.d(t,"explicitDataSetToJS",function(){return u}),s.d(t,"createJPEGBasicOffsetTable",function(){return p}),s.d(t,"parseDicomDataSetExplicit",function(){return q}),s.d(t,"parseDicomDataSetImplicit",function(){return T}),s.d(t,"readFixedString",function(){return b}),s.d(t,"alloc",function(){return k}),s.d(t,"version",function(){return L}),s.d(t,"bigEndianByteArrayParser",function(){return N}),s.d(t,"ByteStream",function(){return J}),s.d(t,"sharedCopy",function(){return j}),s.d(t,"DataSet",function(){return w}),s.d(t,"findAndSetUNElementLength",function(){return y}),s.d(t,"findEndOfEncapsulatedElement",function(){return g}),s.d(t,"findItemDelimitationItemAndSetElementLength",function(){return x}),s.d(t,"littleEndianByteArrayParser",function(){return M}),s.d(t,"parseDicom",function(){return V}),s.d(t,"readDicomElementExplicit",function(){return B}),s.d(t,"readDicomElementImplicit",function(){return A}),s.d(t,"readEncapsulatedImageFrame",function(){return W}),s.d(t,"readEncapsulatedPixelData",function(){return K}),s.d(t,"readEncapsulatedPixelDataFromFragments",function(){return _}),s.d(t,"readPart10Header",function(){return G}),s.d(t,"readSequenceItemsExplicit",function(){return I}),s.d(t,"readSequenceItemsImplicit",function(){return F}),s.d(t,"readSequenceItem",function(){return S}),s.d(t,"readTag",function(){return h});var r={AE:!0,AS:!0,AT:!1,CS:!0,DA:!0,DS:!0,DT:!0,FL:!1,FD:!1,IS:!0,LO:!0,LT:!0,OB:!1,OD:!1,OF:!1,OW:!1,PN:!0,SH:!0,SL:!1,SQ:!1,SS:!1,ST:!0,TM:!0,UI:!0,UL:!1,UN:void 0,UR:!0,US:!1,UT:!0},d=function(e){return r[e]},f=function(e){e=parseInt(e[4],16);if(isNaN(e))throw"dicomParser.isPrivateTag: cannot parse last character of group";return e%2==1},a=function(e){if(void 0!==e){e=e.split("^");return{familyName:e[0],givenName:e[1],middleName:e[2],prefix:e[3],suffix:e[4]}}};function n(e,t){if(2<=e.length){var r=parseInt(e.substring(0,2),10),a=4<=e.length?parseInt(e.substring(2,4),10):void 0,n=6<=e.length?parseInt(e.substring(4,6),10):void 0,i=8<=e.length?e.substring(7,13):void 0,i=i?parseInt(i,10)*Math.pow(10,6-i.length):void 0;if(t&&(isNaN(r)||void 0!==a&&isNaN(a)||void 0!==n&&isNaN(n)||void 0!==i&&isNaN(i)||r<0||23<r||a&&(a<0||59<a)||n&&(n<0||59<n)||i&&(i<0||999999<i)))throw"invalid TM '".concat(e,"'");return{hours:r,minutes:a,seconds:n,fractionalSeconds:i}}if(t)throw"invalid TM '".concat(e,"'")}function i(e,t,r){return!isNaN(r)&&(0<t&&t<=12&&0<e&&e<=function(e,t){switch(e){case 2:return t%4==0&&t%100||t%400==0?29:28;case 9:case 4:case 6:case 11:return 30;default:return 31}}(t,r))}function o(e,t){if(e&&8===e.length){var r=parseInt(e.substring(0,4),10),a=parseInt(e.substring(4,6),10),n=parseInt(e.substring(6,8),10);if(t&&!0!==i(n,a,r))throw"invalid DA '".concat(e,"'");return{year:r,month:a,day:n}}if(t)throw"invalid DA '".concat(e,"'")}function l(n,e){if(void 0===n||void 0===e)throw"dicomParser.explicitElementToString: missing required parameters";if(void 0===e.vr)throw"dicomParser.explicitElementToString: cannot convert implicit element to string";var t,r=e.vr,i=e.tag;function a(e,t){for(var r="",a=0;a<e;a++)0!==a&&(r+="/"),r+=t.call(n,i,a).toString();return r}if(!0===d(r))t=n.string(i);else{if("AT"===r){var o=n.uint32(i);return void 0===o?void 0:"x".concat((o=o<0?4294967295+o+1:o).toString(16).toUpperCase())}"US"===r?t=a(e.length/2,n.uint16):"SS"===r?t=a(e.length/2,n.int16):"UL"===r?t=a(e.length/4,n.uint32):"SL"===r?t=a(e.length/4,n.int32):"FD"===r?t=a(e.length/8,n.double):"FL"===r&&(t=a(e.length/4,n.float))}return t}function u(e,t){if(void 0===e)throw"dicomParser.explicitDataSetToJS: missing required parameter dataSet";t=t||{omitPrivateAttibutes:!0,maxElementLength:128};var r,a={};for(r in e.elements){var n=e.elements[r];if(!0!==t.omitPrivateAttibutes||!f(r))if(n.items){for(var i=[],o=0;o<n.items.length;o++)i.push(u(n.items[o].dataSet,t));a[r]=i}else{var s=void 0;n.length<t.maxElementLength&&(s=l(e,n)),a[r]=void 0!==s?s:{dataOffset:n.dataOffset,length:n.length}}}return a}function c(e,t){return 255===e.byteArray[t]&&217===e.byteArray[t+1]}function m(e,t,r){for(var a,n,i=r;i<t.fragments.length;i++)if(a=e,n=i,n=t.fragments[n],!(!c(a,n.position+n.length-2)&&!c(a,n.position+n.length-3)))return i}function p(e,t,r){if(void 0===e)throw"dicomParser.createJPEGBasicOffsetTable: missing required parameter dataSet";if(void 0===t)throw"dicomParser.createJPEGBasicOffsetTable: missing required parameter pixelDataElement";if("x7fe00010"!==t.tag)throw"dicomParser.createJPEGBasicOffsetTable: parameter 'pixelDataElement' refers to non pixel data tag (expected tag = x7fe00010'";if(!0!==t.encapsulatedPixelData)throw"dicomParser.createJPEGBasicOffsetTable: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(!0!==t.hadUndefinedLength)throw"dicomParser.createJPEGBasicOffsetTable: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(void 0===t.basicOffsetTable)throw"dicomParser.createJPEGBasicOffsetTable: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(void 0===t.fragments)throw"dicomParser.createJPEGBasicOffsetTable: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(t.fragments.length<=0)throw"dicomParser.createJPEGBasicOffsetTable: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(r&&r.length<=0)throw"dicomParser.createJPEGBasicOffsetTable: parameter 'fragments' must not be zero length";r=r||t.fragments;for(var a=[],n=0;;){a.push(t.fragments[n].offset);var i=m(e,t,n);if(void 0===i||i===t.fragments.length-1)return a;n=i+1}}function h(e){if(void 0===e)throw"dicomParser.readTag: missing required parameter 'byteStream'";var t=256*e.readUint16()*256,e=e.readUint16();return"x".concat("00000000".concat((t+e).toString(16)).substr(-8))}function g(e,t,r){if(void 0===e)throw"dicomParser.findEndOfEncapsulatedElement: missing required parameter 'byteStream'";if(void 0===t)throw"dicomParser.findEndOfEncapsulatedElement: missing required parameter 'element'";if(t.encapsulatedPixelData=!0,t.basicOffsetTable=[],t.fragments=[],"xfffee000"!==h(e))throw"dicomParser.findEndOfEncapsulatedElement: basic offset table not found";for(var a=e.readUint32()/4,n=0;n<a;n++){var i=e.readUint32();t.basicOffsetTable.push(i)}for(var o=e.position;e.position<e.byteArray.length;){var s=h(e),d=e.readUint32();if("xfffee0dd"===s)return e.seek(d),void(t.length=e.position-t.dataOffset);if("xfffee000"!==s)return r&&r.push("unexpected tag ".concat(s," while searching for end of pixel data element with undefined length")),d>e.byteArray.length-e.position&&(d=e.byteArray.length-e.position),t.fragments.push({offset:e.position-o-8,position:e.position,length:d}),e.seek(d),void(t.length=e.position-t.dataOffset);t.fragments.push({offset:e.position-o-8,position:e.position,length:d}),e.seek(d)}r&&r.push("pixel data element ".concat(t.tag," missing sequence delimiter tag xfffee0dd"))}function y(e,t){if(void 0===e)throw"dicomParser.findAndSetUNElementLength: missing required parameter 'byteStream'";for(var r=e.byteArray.length-8;e.position<=r;)if(65534===e.readUint16()){var a=e.readUint16();if(57565===a)return 0!==e.readUint32()&&e.warnings("encountered non zero length following item delimiter at position ".concat(e.position-4," while reading element of undefined length with tag ").concat(t.tag)),void(t.length=e.position-t.dataOffset)}t.length=e.byteArray.length-t.dataOffset,e.seek(e.byteArray.length-e.position)}function b(e,t,r){if(r<0)throw"dicomParser.readFixedString - length cannot be less than 0";if(t+r>e.length)throw"dicomParser.readFixedString: attempt to read past end of buffer";for(var a,n="",i=0;i<r;i++){if(0===(a=e[t+i]))return t+=r,n;n+=String.fromCharCode(a)}return n}function v(e,t){for(var r=0;r<t.length;r++){var a=t[r];a.enumerable=a.enumerable||!1,a.configurable=!0,"value"in a&&(a.writable=!0),Object.defineProperty(e,a.key,a)}}function P(e,t){return void 0!==e.parser?e.parser:t}var w=function(){function a(e,t,r){!function(e,t){if(!(e instanceof t))throw new TypeError("Cannot call a class as a function")}(this,a),this.byteArrayParser=e,this.byteArray=t,this.elements=r}var e,t,r;return e=a,(t=[{key:"uint16",value:function(e,t){e=this.elements[e];if(t=void 0!==t?t:0,e&&0!==e.length)return P(e,this.byteArrayParser).readUint16(this.byteArray,e.dataOffset+2*t)}},{key:"int16",value:function(e,t){e=this.elements[e];if(t=void 0!==t?t:0,e&&0!==e.length)return P(e,this.byteArrayParser).readInt16(this.byteArray,e.dataOffset+2*t)}},{key:"uint32",value:function(e,t){e=this.elements[e];if(t=void 0!==t?t:0,e&&0!==e.length)return P(e,this.byteArrayParser).readUint32(this.byteArray,e.dataOffset+4*t)}},{key:"int32",value:function(e,t){e=this.elements[e];if(t=void 0!==t?t:0,e&&0!==e.length)return P(e,this.byteArrayParser).readInt32(this.byteArray,e.dataOffset+4*t)}},{key:"float",value:function(e,t){e=this.elements[e];if(t=void 0!==t?t:0,e&&0!==e.length)return P(e,this.byteArrayParser).readFloat(this.byteArray,e.dataOffset+4*t)}},{key:"double",value:function(e,t){e=this.elements[e];if(t=void 0!==t?t:0,e&&0!==e.length)return P(e,this.byteArrayParser).readDouble(this.byteArray,e.dataOffset+8*t)}},{key:"numStringValues",value:function(e){e=this.elements[e];if(e&&0<e.length){e=b(this.byteArray,e.dataOffset,e.length).match(/\\/g);return null===e?1:e.length+1}}},{key:"string",value:function(e,t){e=this.elements[e];if(e&&e.Value)return e.Value;if(e&&0<e.length){e=b(this.byteArray,e.dataOffset,e.length);return 0<=t?e.split("\\")[t].trim():e.trim()}}},{key:"text",value:function(e,t){e=this.elements[e];if(e&&0<e.length){e=b(this.byteArray,e.dataOffset,e.length);return 0<=t?e.split("\\")[t].replace(/ +$/,""):e.replace(/ +$/,"")}}},{key:"floatString",value:function(e,t){var r=this.elements[e];if(r&&0<r.length){t=this.string(e,t=void 0!==t?t:0);if(void 0!==t)return parseFloat(t)}}},{key:"intString",value:function(e,t){var r=this.elements[e];if(r&&0<r.length){t=this.string(e,t=void 0!==t?t:0);if(void 0!==t)return parseInt(t)}}},{key:"attributeTag",value:function(e){var t=this.elements[e];if(t&&4===t.length){var r=P(t,this.byteArrayParser).readUint16,e=this.byteArray,t=t.dataOffset;return"x".concat("00000000".concat((256*r(e,t)*256+r(e,t+2)).toString(16)).substr(-8))}}}])&&v(e.prototype,t),r&&v(e,r),Object.defineProperty(e,"prototype",{writable:!1}),a}();function x(e,t){if(void 0===e)throw"dicomParser.readDicomElementImplicit: missing required parameter 'byteStream'";for(var r=e.byteArray.length-8;e.position<=r;)if(65534===e.readUint16()){var a=e.readUint16();if(57357===a)return 0!==e.readUint32()&&e.warnings("encountered non zero length following item delimiter at position ".concat(e.position-4," while reading element of undefined length with tag ").concat(t.tag)),void(t.length=e.position-t.dataOffset)}t.length=e.byteArray.length-t.dataOffset,e.seek(e.byteArray.length-e.position)}var E=function(e,t){if(void 0!==e.vr)return"SQ"===e.vr;if(t.position+4<=t.byteArray.length){e=h(t);return t.seek(-4),"xfffee000"===e||"xfffee0dd"===e}return t.warnings.push("eof encountered before finding sequence item tag or sequence delimiter tag in peeking to determine VR"),!1};function A(e,t,r){if(void 0===e)throw"dicomParser.readDicomElementImplicit: missing required parameter 'byteStream'";var a=h(e),a={tag:a,vr:void 0!==r?r(a):void 0,length:e.readUint32(),dataOffset:e.position};return 4294967295===a.length&&(a.hadUndefinedLength=!0),a.tag===t||(!E(a,e)||f(a.tag)&&!a.hadUndefinedLength?a.hadUndefinedLength?x(e,a):e.seek(a.length):(F(e,a,r),f(a.tag)&&(a.items=void 0))),a}function S(e){if(void 0===e)throw"dicomParser.readSequenceItem: missing required parameter 'byteStream'";var t={tag:h(e),length:e.readUint32(),dataOffset:e.position};if("xfffee000"!==t.tag)throw"dicomParser.readSequenceItem: item tag (FFFE,E000) not found at offset ".concat(e.position);return t}function D(e,t){var r=S(e);return 4294967295===r.length?(r.hadUndefinedLength=!0,r.dataSet=function(e,t){for(var r={};e.position<e.byteArray.length;){var a=A(e,void 0,t);if("xfffee00d"===(r[a.tag]=a).tag)return new w(e.byteArrayParser,e.byteArray,r)}return e.warnings.push("eof encountered before finding sequence item delimiter in sequence item of undefined length"),new w(e.byteArrayParser,e.byteArray,r)}(e,t),r.length=e.position-r.dataOffset):(r.dataSet=new w(e.byteArrayParser,e.byteArray,{}),T(r.dataSet,e,e.position+r.length,{vrCallback:t})),r}function F(e,t,r){if(void 0===e)throw"dicomParser.readSequenceItemsImplicit: missing required parameter 'byteStream'";if(void 0===t)throw"dicomParser.readSequenceItemsImplicit: missing required parameter 'element'";t.items=[],(4294967295===t.length?function(e,t,r){for(;e.position+4<=e.byteArray.length;){var a=h(e);if(e.seek(-4),"xfffee0dd"===a)return t.length=e.position-t.dataOffset,e.seek(8);a=D(e,r);t.items.push(a)}e.warnings.push("eof encountered before finding sequence delimiter in sequence of undefined length"),t.length=e.byteArray.length-t.dataOffset}:function(e,t,r){for(var a=t.dataOffset+t.length;e.position<a;){var n=D(e,r);t.items.push(n)}})(e,t,r)}function O(e,t){var r=S(e);return 4294967295===r.length?(r.hadUndefinedLength=!0,r.dataSet=function(e,t){for(var r={};e.position<e.byteArray.length;){var a=B(e,t);if("xfffee00d"===(r[a.tag]=a).tag)return new w(e.byteArrayParser,e.byteArray,r)}return t.push("eof encountered before finding item delimiter tag while reading sequence item of undefined length"),new w(e.byteArrayParser,e.byteArray,r)}(e,t),r.length=e.position-r.dataOffset):(r.dataSet=new w(e.byteArrayParser,e.byteArray,{}),q(r.dataSet,e,e.position+r.length)),r}function I(e,t,r){if(void 0===e)throw"dicomParser.readSequenceItemsExplicit: missing required parameter 'byteStream'";if(void 0===t)throw"dicomParser.readSequenceItemsExplicit: missing required parameter 'element'";t.items=[],(4294967295===t.length?function(e,t,r){for(;e.position+4<=e.byteArray.length;){var a=h(e);if(e.seek(-4),"xfffee0dd"===a)return t.length=e.position-t.dataOffset,e.seek(8);a=O(e,r);t.items.push(a)}r.push("eof encountered before finding sequence delimitation tag while reading sequence of undefined length"),t.length=e.position-t.dataOffset}:function(e,t,r){for(var a=t.dataOffset+t.length;e.position<a;){var n=O(e,r);t.items.push(n)}})(e,t,r)}var U=function(e){return"OB"===e||"OD"===e||"OL"===e||"OW"===e||"SQ"===e||"OF"===e||"UC"===e||"UR"===e||"UT"===e||"UN"===e?4:2};function B(e,t,r){if(void 0===e)throw"dicomParser.readDicomElementExplicit: missing required parameter 'byteStream'";var a={tag:h(e),vr:e.readFixedString(2)};return 2===U(a.vr)?a.length=e.readUint16():(e.seek(2),a.length=e.readUint32()),a.dataOffset=e.position,4294967295===a.length&&(a.hadUndefinedLength=!0),a.tag===r||("SQ"===a.vr?I(e,a,t):4294967295===a.length?"x7fe00010"===a.tag?g(e,a,t):("UN"===a.vr?F:x)(e,a):e.seek(a.length)),a}function q(e,t,r){var a=3<arguments.length&&void 0!==arguments[3]?arguments[3]:{};if(r=void 0===r?t.byteArray.length:r,void 0===t)throw"dicomParser.parseDicomDataSetExplicit: missing required parameter 'byteStream'";if(r<t.position||r>t.byteArray.length)throw"dicomParser.parseDicomDataSetExplicit: invalid value for parameter 'maxP osition'";for(var n=e.elements;t.position<r;){var i=B(t,e.warnings,a.untilTag);if((n[i.tag]=i).tag===a.untilTag)return}if(t.position>r)throw"dicomParser:parseDicomDataSetExplicit: buffer overrun"}function T(e,t,r){var a=3<arguments.length&&void 0!==arguments[3]?arguments[3]:{};if(r=void 0===r?e.byteArray.length:r,void 0===t)throw"dicomParser.parseDicomDataSetImplicit: missing required parameter 'byteStream'";if(r<t.position||r>t.byteArray.length)throw"dicomParser.parseDicomDataSetImplicit: invalid value for parameter 'maxPosition'";for(var n=e.elements;t.position<r;){var i=A(t,a.untilTag,a.vrCallback);if((n[i.tag]=i).tag===a.untilTag)return}}function k(e,t){if("undefined"!=typeof Buffer&&e instanceof Buffer)return Buffer.alloc(t);if(e instanceof Uint8Array)return new Uint8Array(t);throw"dicomParser.alloc: unknown type for byteArray"}var L="1.8.12",N={readUint16:function(e,t){if(t<0)throw"bigEndianByteArrayParser.readUint16: position cannot be less than 0";if(t+2>e.length)throw"bigEndianByteArrayParser.readUint16: attempt to read past end of buffer";return(e[t]<<8)+e[t+1]},readInt16:function(e,t){if(t<0)throw"bigEndianByteArrayParser.readInt16: position cannot be less than 0";if(t+2>e.length)throw"bigEndianByteArrayParser.readInt16: attempt to read past end of buffer";t=(e[t]<<8)+e[t+1];return t=32768&t?t-65535-1:t},readUint32:function(e,t){if(t<0)throw"bigEndianByteArrayParser.readUint32: position cannot be less than 0";if(t+4>e.length)throw"bigEndianByteArrayParser.readUint32: attempt to read past end of buffer";return 256*(256*(256*e[t]+e[t+1])+e[t+2])+e[t+3]},readInt32:function(e,t){if(t<0)throw"bigEndianByteArrayParser.readInt32: position cannot be less than 0";if(t+4>e.length)throw"bigEndianByteArrayParser.readInt32: attempt to read past end of buffer";return(e[t]<<24)+(e[t+1]<<16)+(e[t+2]<<8)+e[t+3]},readFloat:function(e,t){if(t<0)throw"bigEndianByteArrayParser.readFloat: position cannot be less than 0";if(t+4>e.length)throw"bigEndianByteArrayParser.readFloat: attempt to read past end of buffer";var r=new Uint8Array(4);return r[3]=e[t],r[2]=e[t+1],r[1]=e[t+2],r[0]=e[t+3],new Float32Array(r.buffer)[0]},readDouble:function(e,t){if(t<0)throw"bigEndianByteArrayParser.readDouble: position cannot be less than 0";if(t+8>e.length)throw"bigEndianByteArrayParser.readDouble: attempt to read past end of buffer";var r=new Uint8Array(8);return r[7]=e[t],r[6]=e[t+1],r[5]=e[t+2],r[4]=e[t+3],r[3]=e[t+4],r[2]=e[t+5],r[1]=e[t+6],r[0]=e[t+7],new Float64Array(r.buffer)[0]}};function j(e,t,r){if("undefined"!=typeof Buffer&&e instanceof Buffer)return e.slice(t,t+r);if(e instanceof Uint8Array)return new Uint8Array(e.buffer,e.byteOffset+t,r);throw"dicomParser.from: unknown type for byteArray"}function C(e,t){for(var r=0;r<t.length;r++){var a=t[r];a.enumerable=a.enumerable||!1,a.configurable=!0,"value"in a&&(a.writable=!0),Object.defineProperty(e,a.key,a)}}var J=function(){function a(e,t,r){if(!function(e,t){if(!(e instanceof t))throw new TypeError("Cannot call a class as a function")}(this,a),void 0===e)throw"dicomParser.ByteStream: missing required parameter 'byteArrayParser'";if(void 0===t)throw"dicomParser.ByteStream: missing required parameter 'byteArray'";if(t instanceof Uint8Array==!1&&("undefined"==typeof Buffer||t instanceof Buffer==!1))throw"dicomParser.ByteStream: parameter byteArray is not of type Uint8Array or Buffer";if(r<0)throw"dicomParser.ByteStream: parameter 'position' cannot be less than 0";if(r>=t.length)throw"dicomParser.ByteStream: parameter 'position' cannot be greater than or equal to 'byteArray' length";this.byteArrayParser=e,this.byteArray=t,this.position=r||0,this.warnings=[]}var e,t,r;return e=a,(t=[{key:"seek",value:function(e){if(this.position+e<0)throw"dicomParser.ByteStream.prototype.seek: cannot seek to position < 0";this.position+=e}},{key:"readByteStream",value:function(e){if(this.position+e>this.byteArray.length)throw"dicomParser.ByteStream.prototype.readByteStream: readByteStream - buffer overread";var t=j(this.byteArray,this.position,e);return this.position+=e,new a(this.byteArrayParser,t)}},{key:"getSize",value:function(){return this.byteArray.length}},{key:"readUint16",value:function(){var e=this.byteArrayParser.readUint16(this.byteArray,this.position);return this.position+=2,e}},{key:"readUint32",value:function(){var e=this.byteArrayParser.readUint32(this.byteArray,this.position);return this.position+=4,e}},{key:"readFixedString",value:function(e){var t=b(this.byteArray,this.position,e);return this.position+=e,t}}])&&C(e.prototype,t),r&&C(e,r),Object.defineProperty(e,"prototype",{writable:!1}),a}(),M={readUint16:function(e,t){if(t<0)throw"littleEndianByteArrayParser.readUint16: position cannot be less than 0";if(t+2>e.length)throw"littleEndianByteArrayParser.readUint16: attempt to read past end of buffer";return e[t]+256*e[t+1]},readInt16:function(e,t){if(t<0)throw"littleEndianByteArrayParser.readInt16: position cannot be less than 0";if(t+2>e.length)throw"littleEndianByteArrayParser.readInt16: attempt to read past end of buffer";t=e[t]+(e[t+1]<<8);return t=32768&t?t-65535-1:t},readUint32:function(e,t){if(t<0)throw"littleEndianByteArrayParser.readUint32: position cannot be less than 0";if(t+4>e.length)throw"littleEndianByteArrayParser.readUint32: attempt to read past end of buffer";return e[t]+256*e[t+1]+256*e[t+2]*256+256*e[t+3]*256*256},readInt32:function(e,t){if(t<0)throw"littleEndianByteArrayParser.readInt32: position cannot be less than 0";if(t+4>e.length)throw"littleEndianByteArrayParser.readInt32: attempt to read past end of buffer";return e[t]+(e[t+1]<<8)+(e[t+2]<<16)+(e[t+3]<<24)},readFloat:function(e,t){if(t<0)throw"littleEndianByteArrayParser.readFloat: position cannot be less than 0";if(t+4>e.length)throw"littleEndianByteArrayParser.readFloat: attempt to read past end of buffer";var r=new Uint8Array(4);return r[0]=e[t],r[1]=e[t+1],r[2]=e[t+2],r[3]=e[t+3],new Float32Array(r.buffer)[0]},readDouble:function(e,t){if(t<0)throw"littleEndianByteArrayParser.readDouble: position cannot be less than 0";if(t+8>e.length)throw"littleEndianByteArrayParser.readDouble: attempt to read past end of buffer";var r=new Uint8Array(8);return r[0]=e[t],r[1]=e[t+1],r[2]=e[t+2],r[3]=e[t+3],r[4]=e[t+4],r[5]=e[t+5],r[6]=e[t+6],r[7]=e[t+7],new Float64Array(r.buffer)[0]}};function G(e){var i=1<arguments.length&&void 0!==arguments[1]?arguments[1]:{};if(void 0===e)throw"dicomParser.readPart10Header: missing required parameter 'byteArray'";var o=i.TransferSyntaxUID,s=new J(M,e);return function(){var e=function(){if(s.getSize()<=132&&o)return!1;if(s.seek(128),"DICM"===s.readFixedString(4))return!0;if(!(i||{}).TransferSyntaxUID)throw"dicomParser.readPart10Header: DICM prefix not found at location 132 - this is not a valid DICOM P10 file.";return s.seek(0),!1}(),t=[],r={};if(!e)return s.position=0,{elements:{x00020010:{tag:"x00020010",vr:"UI",Value:o}},warnings:t};for(;s.position<s.byteArray.length;){var a=s.position,n=B(s,t);if("x0002ffff"<n.tag){s.position=a;break}n.parser=M,r[n.tag]=n}return(e=new w(s.byteArrayParser,s.byteArray,r)).warnings=s.warnings,e.position=s.position,e}()}var z="1.2.840.10008.1.2.2";function V(i){var o=1<arguments.length&&void 0!==arguments[1]?arguments[1]:{};if(void 0===i)throw new Error("dicomParser.parseDicom: missing required parameter 'byteArray'");var e,a=function(e){if(void 0===e.elements.x00020010)throw new Error("dicomParser.parseDicom: missing required meta header attribute 0002,0010");e=e.elements.x00020010;return e&&e.Value||b(i,e.dataOffset,e.length)};function t(t){var e=a(t),r="1.2.840.10008.1.2"!==e,e=function(e,t){var r="[object process]"===Object.prototype.toString.call("undefined"!=typeof process?process:0);if("1.2.840.10008.1.2.1.99"!==e)return new J(e===z?N:M,i,t);if(o&&o.inflater){e=o.inflater(i,t);return new J(M,e,0)}if(!0==r){var a=s(0),n=j(i,t,i.length-t),a=a.inflateRawSync(n),n=k(i,a.length+t);return i.copy(n,0,0,t),a.copy(n,t),new J(M,n,0)}if("undefined"==typeof pako)throw"dicomParser.parseDicom: no inflater available to handle deflate transfer syntax";return a=i.slice(t),n=pako.inflateRaw(a),(a=k(i,n.length+t)).set(i.slice(0,t),0),a.set(n,t),new J(M,a,0)}(e,t.position),t=new w(e.byteArrayParser,e.byteArray,{});t.warnings=e.warnings;try{(r?q:T)(t,e,e.byteArray.length,o)}catch(e){throw{exception:e,dataSet:t}}return t}return function(e,t){for(var r in e.elements)e.elements.hasOwnProperty(r)&&(t.elements[r]=e.elements[r]);return void 0!==e.warnings&&(t.warnings=e.warnings.concat(t.warnings)),t}(e=G(i,o),t(e))}var R=function(e,t,r){for(var a=0,n=t;n<t+r;n++)a+=e[n].length;return a};function _(e,t,r,a,n){if(n=n||t.fragments,void 0===e)throw"dicomParser.readEncapsulatedPixelDataFromFragments: missing required parameter 'dataSet'";if(void 0===t)throw"dicomParser.readEncapsulatedPixelDataFromFragments: missing required parameter 'pixelDataElement'";if(void 0===r)throw"dicomParser.readEncapsulatedPixelDataFromFragments: missing required parameter 'startFragmentIndex'";if(void 0===(a=a||1))throw"dicomParser.readEncapsulatedPixelDataFromFragments: missing required parameter 'numFragments'";if("x7fe00010"!==t.tag)throw"dicomParser.readEncapsulatedPixelDataFromFragments: parameter 'pixelDataElement' refers to non pixel data tag (expected tag = x7fe00010";if(!0!==t.encapsulatedPixelData)throw"dicomParser.readEncapsulatedPixelDataFromFragments: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(!0!==t.hadUndefinedLength)throw"dicomParser.readEncapsulatedPixelDataFromFragments: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(void 0===t.basicOffsetTable)throw"dicomParser.readEncapsulatedPixelDataFromFragments: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(void 0===t.fragments)throw"dicomParser.readEncapsulatedPixelDataFromFragments: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(t.fragments.length<=0)throw"dicomParser.readEncapsulatedPixelDataFromFragments: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(r<0)throw"dicomParser.readEncapsulatedPixelDataFromFragments: parameter 'startFragmentIndex' must be >= 0";if(r>=t.fragments.length)throw"dicomParser.readEncapsulatedPixelDataFromFragments: parameter 'startFragmentIndex' must be < number of fragments";if(a<1)throw"dicomParser.readEncapsulatedPixelDataFromFragments: parameter 'numFragments' must be > 0";if(r+a>t.fragments.length)throw"dicomParser.readEncapsulatedPixelDataFromFragments: parameter 'startFragment' + 'numFragments' < number of fragments";var i=new J(e.byteArrayParser,e.byteArray,t.dataOffset),t=S(i);if("xfffee000"!==t.tag)throw"dicomParser.readEncapsulatedPixelData: missing basic offset table xfffee000";i.seek(t.length);var o=i.position;if(1===a)return j(i.byteArray,o+n[r].offset+8,n[r].length);for(var t=R(n,r,a),s=k(i.byteArray,t),d=0,f=r;f<r+a;f++)for(var l=o+n[f].offset+8,u=0;u<n[f].length;u++)s[d++]=i.byteArray[l++];return s}var H=function(e,t){for(var r=0;r<e.length;r++)if(e[r].offset===t)return r},Q=function(e,t,r,a){if(e===t.length-1)return r.length-a;for(var n=t[e+1],i=a+1;i<r.length;i++)if(r[i].offset===n)return i-a;throw"dicomParser.calculateNumberOfFragmentsForFrame: could not find fragment with offset matching basic offset table"};function W(e,t,r,a,n){if(a=a||t.basicOffsetTable,n=n||t.fragments,void 0===e)throw"dicomParser.readEncapsulatedImageFrame: missing required parameter 'dataSet'";if(void 0===t)throw"dicomParser.readEncapsulatedImageFrame: missing required parameter 'pixelDataElement'";if(void 0===r)throw"dicomParser.readEncapsulatedImageFrame: missing required parameter 'frameIndex'";if(void 0===a)throw"dicomParser.readEncapsulatedImageFrame: parameter 'pixelDataElement' does not have basicOffsetTable";if("x7fe00010"!==t.tag)throw"dicomParser.readEncapsulatedImageFrame: parameter 'pixelDataElement' refers to non pixel data tag (expected tag = x7fe00010)";if(!0!==t.encapsulatedPixelData)throw"dicomParser.readEncapsulatedImageFrame: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(!0!==t.hadUndefinedLength)throw"dicomParser.readEncapsulatedImageFrame: parameter 'pixelDataElement' refers to pixel data element that does not have undefined length";if(void 0===t.fragments)throw"dicomParser.readEncapsulatedImageFrame: parameter 'pixelDataElement' refers to pixel data element that does not have fragments";if(0===a.length)throw"dicomParser.readEncapsulatedImageFrame: basicOffsetTable has zero entries";if(r<0)throw"dicomParser.readEncapsulatedImageFrame: parameter 'frameIndex' must be >= 0";if(r>=a.length)throw"dicomParser.readEncapsulatedImageFrame: parameter 'frameIndex' must be < basicOffsetTable.length";var i=a[r],i=H(n,i);if(void 0===i)throw"dicomParser.readEncapsulatedImageFrame: unable to find fragment that matches basic offset table entry";return _(e,t,i,Q(r,a,n,i),n)}var $=!1;function K(e,t,r){if($||($=!0,console&&console.log&&console.log("WARNING: dicomParser.readEncapsulatedPixelData() has been deprecated")),void 0===e)throw"dicomParser.readEncapsulatedPixelData: missing required parameter 'dataSet'";if(void 0===t)throw"dicomParser.readEncapsulatedPixelData: missing required parameter 'element'";if(void 0===r)throw"dicomParser.readEncapsulatedPixelData: missing required parameter 'frame'";if("x7fe00010"!==t.tag)throw"dicomParser.readEncapsulatedPixelData: parameter 'element' refers to non pixel data tag (expected tag = x7fe00010)";if(!0!==t.encapsulatedPixelData)throw"dicomParser.readEncapsulatedPixelData: parameter 'element' refers to pixel data element that does not have encapsulated pixel data";if(!0!==t.hadUndefinedLength)throw"dicomParser.readEncapsulatedPixelData: parameter 'element' refers to pixel data element that does not have encapsulated pixel data";if(void 0===t.basicOffsetTable)throw"dicomParser.readEncapsulatedPixelData: parameter 'element' refers to pixel data element that does not have encapsulated pixel data";if(void 0===t.fragments)throw"dicomParser.readEncapsulatedPixelData: parameter 'element' refers to pixel data element that does not have encapsulated pixel data";if(r<0)throw"dicomParser.readEncapsulatedPixelData: parameter 'frame' must be >= 0";return 0!==t.basicOffsetTable.length?W(e,t,r):_(e,t,0,t.fragments.length)}t.default={isStringVr:d,isPrivateTag:f,parsePN:a,parseTM:n,parseDA:o,explicitElementToString:l,explicitDataSetToJS:u,createJPEGBasicOffsetTable:p,parseDicomDataSetExplicit:q,parseDicomDataSetImplicit:T,readFixedString:b,alloc:k,version:L,bigEndianByteArrayParser:N,ByteStream:J,sharedCopy:j,DataSet:w,findAndSetUNElementLength:y,findEndOfEncapsulatedElement:g,findItemDelimitationItemAndSetElementLength:x,littleEndianByteArrayParser:M,parseDicom:V,readDicomElementExplicit:B,readDicomElementImplicit:A,readEncapsulatedImageFrame:W,readEncapsulatedPixelData:K,readEncapsulatedPixelDataFromFragments:_,readPart10Header:G,readSequenceItemsExplicit:I,readSequenceItemsImplicit:F,readSequenceItem:S,readTag:h,LEI:"1.2.840.10008.1.2",LEE:"1.2.840.10008.1.2.1"}}],i={},n.m=a,n.c=i,n.d=function(e,t,r){n.o(e,t)||Object.defineProperty(e,t,{enumerable:!0,get:r})},n.r=function(e){"undefined"!=typeof Symbol&&Symbol.toStringTag&&Object.defineProperty(e,Symbol.toStringTag,{value:"Module"}),Object.defineProperty(e,"__esModule",{value:!0})},n.t=function(t,e){if(1&e&&(t=n(t)),8&e)return t;if(4&e&&"object"==typeof t&&t&&t.__esModule)return t;var r=Object.create(null);if(n.r(r),Object.defineProperty(r,"default",{enumerable:!0,value:t}),2&e&&"string"!=typeof t)for(var a in t)n.d(r,a,function(e){return t[e]}.bind(null,a));return r},n.n=function(e){var t=e&&e.__esModule?function(){return e.default}:function(){return e};return n.d(t,"a",t),t},n.o=function(e,t){return Object.prototype.hasOwnProperty.call(e,t)},n.p="",n(n.s=1);function n(e){if(i[e])return i[e].exports;var t=i[e]={i:e,l:!1,exports:{}};return a[e].call(t.exports,t,t.exports,n),t.l=!0,t.exports}var a,i});
+//# sourceMappingURL=dicomParser.min.js.map
+</script>
+
+<!-- Bundled JPEG-Lossless decoder (jpeg-lossless-decoder-js, MIT) -->
+<script>
+(function(){var S=Object.defineProperty;var A=(a,t)=>{for(var e in t)S(a,e,{get:t[e],enumerable:!0})};var w={hSamp:0,quantTableSel:0,vSamp:0};var b=class{buffer;index;constructor(t,e,r){this.buffer=new Uint8Array(t,e,r),this.index=0}get16(){let t=(this.buffer[this.index]<<8)+this.buffer[this.index+1];return this.index+=2,t}get8(){let t=this.buffer[this.index];return this.index+=1,t}};var x=class{dimX=0;dimY=0;numComp=0;precision=0;components=[];read(t){let e=0,r,o=t.get16();e+=2,this.precision=t.get8(),e+=1,this.dimY=t.get16(),e+=2,this.dimX=t.get16(),e+=2,this.numComp=t.get8(),e+=1;for(let s=1;s<=this.numComp;s+=1){if(e>o)throw new Error("ERROR: frame format error");let i=t.get8();if(e+=1,e>=o)throw new Error("ERROR: frame format error [c>=Lf]");r=t.get8(),e+=1,this.components[i]||(this.components[i]={...w}),this.components[i].hSamp=r>>4,this.components[i].vSamp=r&15,this.components[i].quantTableSel=t.get8(),e+=1}if(e!==o)throw new Error("ERROR: frame format error [Lf!=count]");return 1}};var k={};A(k,{crc32:()=>L,crcTable:()=>T,createArray:()=>c,makeCRCTable:()=>y});var c=(...a)=>{if(a.length>1){let t=a[0],e=a.slice(1),r=[];for(let o=0;o<t;o++)r[o]=c(...e);return r}else return Array(a[0]).fill(void 0)},y=function(){let a,t=[];for(let e=0;e<256;e++){a=e;for(let r=0;r<8;r++)a=a&1?3988292384^a>>>1:a>>>1;t[e]=a}return t},T=y(),L=function(a){let t=new Uint8Array(a),e=-1;for(let r=0;r<t.length;r++)e=e>>>8^T[(e^t[r])&255];return(e^-1)>>>0};var p=class a{static MSB=2147483648;l;th;v;tc;constructor(){this.l=c(4,2,16),this.th=[0,0,0,0],this.v=c(4,2,16,200),this.tc=[[0,0],[0,0],[0,0],[0,0]]}read(t,e){let r=0,o,s,i,n,f,u=t.get16();for(r+=2;r<u;){if(o=t.get8(),r+=1,s=o&15,s>3)throw new Error("ERROR: Huffman table ID > 3");if(i=o>>4,i>2)throw new Error("ERROR: Huffman table [Table class > 2 ]");for(this.th[s]=1,this.tc[s][i]=1,n=0;n<16;n+=1)this.l[s][i][n]=t.get8(),r+=1;for(n=0;n<16;n+=1)for(f=0;f<this.l[s][i][n];f+=1){if(r>u)throw new Error("ERROR: Huffman table format error [count>Lh]");this.v[s][i][n][f]=t.get8(),r+=1}}if(r!==u)throw new Error("ERROR: Huffman table format error [count!=Lf]");for(n=0;n<4;n+=1)for(f=0;f<2;f+=1)this.tc[n][f]!==0&&this.buildHuffTable(e[n][f],this.l[n][f],this.v[n][f]);return 1}buildHuffTable(t,e,r){let o,s,i,n,f;for(s=0,i=0;i<8;i+=1)for(n=0;n<e[i];n+=1)for(f=0;f<256>>i+1;f+=1)t[s]=r[i][n]|i+1<<8,s+=1;for(i=1;s<256;i+=1,s+=1)t[s]=i|a.MSB;for(o=1,s=0,i=8;i<16;i+=1)for(n=0;n<e[i];n+=1){for(f=0;f<256>>i-7;f+=1)t[o*256+s]=r[i][n]|i+1<<8,s+=1;if(s>=256){if(s>256)throw new Error("ERROR: Huffman table error(1)!");s=0,o+=1}}}};var d=class a{precision=[];tq=[0,0,0,0];quantTables=c(4,64);static enhanceQuantizationTable=function(t,e){for(let r=0;r<8;r+=1)t[e[0*8+r]]*=90,t[e[4*8+r]]*=90,t[e[2*8+r]]*=118,t[e[6*8+r]]*=49,t[e[5*8+r]]*=71,t[e[1*8+r]]*=126,t[e[7*8+r]]*=25,t[e[3*8+r]]*=106;for(let r=0;r<8;r+=1)t[e[0+8*r]]*=90,t[e[4+8*r]]*=90,t[e[2+8*r]]*=118,t[e[6+8*r]]*=49,t[e[5+8*r]]*=71,t[e[1+8*r]]*=126,t[e[7+8*r]]*=25,t[e[3+8*r]]*=106;for(let r=0;r<64;r+=1)t[r]>>=6};read(t,e){let r=0,o,s,i,n=t.get16();for(r+=2;r<n;){if(o=t.get8(),r+=1,s=o&15,s>3)throw new Error("ERROR: Quantization table ID > 3");if(this.precision[s]=o>>4,this.precision[s]===0)this.precision[s]=8;else if(this.precision[s]===1)this.precision[s]=16;else throw new Error("ERROR: Quantization table precision error");if(this.tq[s]=1,this.precision[s]===8){for(i=0;i<64;i+=1){if(r>n)throw new Error("ERROR: Quantization table format error");this.quantTables[s][i]=t.get8(),r+=1}a.enhanceQuantizationTable(this.quantTables[s],e)}else{for(i=0;i<64;i+=1){if(r>n)throw new Error("ERROR: Quantization table format error");this.quantTables[s][i]=t.get16(),r+=2}a.enhanceQuantizationTable(this.quantTables[s],e)}}if(r!==n)throw new Error("ERROR: Quantization table error [count!=Lq]");return 1}};var R={acTabSel:0,dcTabSel:0,scanCompSel:0};var g=class{ah=0;al=0;numComp=0;selection=0;spectralEnd=0;components=[];read(t){let e=0,r,o,s=t.get16();for(e+=2,this.numComp=t.get8(),e+=1,r=0;r<this.numComp;r+=1){if(this.components[r]={...R},e>s)throw new Error("ERROR: scan header format error");this.components[r].scanCompSel=t.get8(),e+=1,o=t.get8(),e+=1,this.components[r].dcTabSel=o>>4,this.components[r].acTabSel=o&15}if(this.selection=t.get8(),e+=1,this.spectralEnd=t.get8(),e+=1,o=t.get8(),this.ah=o>>4,this.al=o&15,e+=1,e!==s)throw new Error("ERROR: scan header format error [count!=Ns]");return 1}};var D=function(){let a=new ArrayBuffer(2);return new DataView(a).setInt16(0,256,!0),new Int16Array(a)[0]===256}(),E=class a{static IDCT_P=[0,5,40,16,45,2,7,42,21,56,8,61,18,47,1,4,41,23,58,13,32,24,37,10,63,17,44,3,6,43,20,57,15,34,29,48,53,26,39,9,60,19,46,22,59,12,33,31,50,55,25,36,11,62,14,35,28,49,52,27,38,30,51,54];static TABLE=[0,1,5,6,14,15,27,28,2,4,7,13,16,26,29,42,3,8,12,17,25,30,41,43,9,11,18,24,31,40,44,53,10,19,23,32,39,45,52,54,20,22,33,38,46,51,55,60,21,34,37,47,50,56,59,61,35,36,48,49,57,58,62,63];static MAX_HUFFMAN_SUBTREE=50;static MSB=2147483648;static RESTART_MARKER_BEGIN=65488;static RESTART_MARKER_END=65495;buffer=null;stream=null;frame=new x;huffTable=new p;quantTable=new d;scan=new g;DU=c(10,4,64);HuffTab=c(4,2,50*256);IDCT_Source=[];nBlock=[];acTab=c(10,1);dcTab=c(10,1);qTab=c(10,1);marker=0;markerIndex=0;numComp=0;restartInterval=0;selection=0;xDim=0;yDim=0;xLoc=0;yLoc=0;outputData=null;restarting=!1;mask=0;numBytes=0;precision=void 0;components=[];getter=null;setter=null;output=null;selector=null;constructor(t,e){this.buffer=t??null,this.numBytes=e??0}decompress(t,e,r){return this.decode(t,e,r).buffer}decode(t,e,r,o){let s=0,i=[],n,f,u=[],l=[],m;t&&(this.buffer=t),o!==void 0&&(this.numBytes=o),this.stream=new b(this.buffer,e,r),this.buffer=null,this.xLoc=0,this.yLoc=0;let h=this.stream.get16();if(h!==65496)throw new Error("Not a JPEG file");for(h=this.stream.get16();h>>4!==4092||h===65476;){switch(h){case 65476:this.huffTable.read(this.stream,this.HuffTab);break;case 65484:throw new Error("Program doesn't support arithmetic coding. (format throw new IOException)");case 65499:this.quantTable.read(this.stream,a.TABLE);break;case 65501:this.restartInterval=this.readNumber()??0;break;case 65504:case 65505:case 65506:case 65507:case 65508:case 65509:case 65510:case 65511:case 65512:case 65513:case 65514:case 65515:case 65516:case 65517:case 65518:case 65519:this.readApp();break;case 65534:this.readComment();break;default:if(h>>8!==255)throw new Error("ERROR: format throw new IOException! (decode)")}h=this.stream.get16()}if(h<65472||h>65479)throw new Error("ERROR: could not handle arithmetic code!");this.frame.read(this.stream),h=this.stream.get16();do{for(;h!==65498;){switch(h){case 65476:this.huffTable.read(this.stream,this.HuffTab);break;case 65484:throw new Error("Program doesn't support arithmetic coding. (format throw new IOException)");case 65499:this.quantTable.read(this.stream,a.TABLE);break;case 65501:this.restartInterval=this.readNumber()??0;break;case 65504:case 65505:case 65506:case 65507:case 65508:case 65509:case 65510:case 65511:case 65512:case 65513:case 65514:case 65515:case 65516:case 65517:case 65518:case 65519:this.readApp();break;case 65534:this.readComment();break;default:if(h>>8!==255)throw new Error("ERROR: format throw new IOException! (Parser.decode)")}h=this.stream.get16()}switch(this.precision=this.frame.precision,this.components=this.frame.components,this.numBytes||(this.numBytes=Math.round(Math.ceil(this.precision/8))),this.numBytes===1?this.mask=255:this.mask=65535,this.scan.read(this.stream),this.numComp=this.scan.numComp,this.selection=this.scan.selection,this.numBytes===1?this.numComp===3?(this.getter=this.getValueRGB,this.setter=this.setValueRGB,this.output=this.outputRGB):(this.getter=this.getValue8,this.setter=this.setValue8,this.output=this.outputSingle):(this.getter=this.getValue8,this.setter=this.setValue8,this.output=this.outputSingle),this.selection){case 2:this.selector=this.select2;break;case 3:this.selector=this.select3;break;case 4:this.selector=this.select4;break;case 5:this.selector=this.select5;break;case 6:this.selector=this.select6;break;case 7:this.selector=this.select7;break;default:this.selector=this.select1;break}for(n=0;n<this.numComp;n+=1)f=this.scan.components[n].scanCompSel,this.qTab[n]=this.quantTable.quantTables[this.components[f].quantTableSel],this.nBlock[n]=this.components[f].vSamp*this.components[f].hSamp,this.dcTab[n]=this.HuffTab[this.scan.components[n].dcTabSel][0],this.acTab[n]=this.HuffTab[this.scan.components[n].acTabSel][1];for(this.xDim=this.frame.dimX,this.yDim=this.frame.dimY,this.numBytes===1?this.outputData=new Uint8Array(new ArrayBuffer(this.xDim*this.yDim*this.numBytes*this.numComp)):this.outputData=new Uint16Array(new ArrayBuffer(this.xDim*this.yDim*this.numBytes*this.numComp)),s+=1;;){for(u[0]=0,l[0]=0,n=0;n<10;n+=1)i[n]=1<<this.precision-1;if(this.restartInterval===0){for(h=this.decodeUnit(i,u,l);h===0&&this.xLoc<this.xDim&&this.yLoc<this.yDim;)this.output(i),h=this.decodeUnit(i,u,l);break}for(m=0;m<this.restartInterval&&(this.restarting=m===0,h=this.decodeUnit(i,u,l),this.output(i),h===0);m+=1);if(h===0&&(this.markerIndex!==0?(h=65280|this.marker,this.markerIndex=0):h=this.stream.get16()),!(h>=a.RESTART_MARKER_BEGIN&&h<=a.RESTART_MARKER_END))break}h===65500&&s===1&&(this.readNumber(),h=this.stream.get16())}while(h!==65497&&this.xLoc<this.xDim&&this.yLoc<this.yDim&&s===0);return this.outputData}decodeUnit(t,e,r){return this.numComp===1?this.decodeSingle(t,e,r):this.numComp===3?this.decodeRGB(t,e,r):-1}select1(t){return this.getPreviousX(t)}select2(t){return this.getPreviousY(t)}select3(t){return this.getPreviousXY(t)}select4(t){return this.getPreviousX(t)+this.getPreviousY(t)-this.getPreviousXY(t)}select5(t){return this.getPreviousX(t)+(this.getPreviousY(t)-this.getPreviousXY(t)>>1)}select6(t){return this.getPreviousY(t)+(this.getPreviousX(t)-this.getPreviousXY(t)>>1)}select7(t){return(this.getPreviousX(t)+this.getPreviousY(t))/2}decodeRGB(t,e,r){if(this.selector===null)throw new Error("decode hasn't run yet");let o,s,i,n,f,u,l;for(t[0]=this.selector(0),t[1]=this.selector(1),t[2]=this.selector(2),n=0;n<this.numComp;n+=1)for(i=this.qTab[n],o=this.acTab[n],s=this.dcTab[n],f=0;f<this.nBlock[n];f+=1){for(u=0;u<this.IDCT_Source.length;u+=1)this.IDCT_Source[u]=0;let m=this.getHuffmanValue(s,e,r);if(m>=65280)return m;for(t[n]=this.IDCT_Source[0]=t[n]+this.getn(r,m,e,r),this.IDCT_Source[0]*=i[0],l=1;l<64;l+=1){if(m=this.getHuffmanValue(o,e,r),m>=65280)return m;if(l+=m>>4,m&15)this.IDCT_Source[a.IDCT_P[l]]=this.getn(r,m&15,e,r)*i[l];else if(!(m>>4))break}}return 0}decodeSingle(t,e,r){if(this.selector===null)throw new Error("decode hasn't run yet");let o,s,i,n;for(this.restarting?(this.restarting=!1,t[0]=1<<this.frame.precision-1):t[0]=this.selector(),s=0;s<this.nBlock[0];s+=1){if(o=this.getHuffmanValue(this.dcTab[0],e,r),o>=65280)return o;if(i=this.getn(t,o,e,r),n=i>>8,n>=a.RESTART_MARKER_BEGIN&&n<=a.RESTART_MARKER_END)return n;t[0]+=i}return 0}getHuffmanValue(t,e,r){let o,s;if(!this.stream)throw new Error("stream not initialized");if(r[0]<8?(e[0]<<=8,s=this.stream.get8(),s===255&&(this.marker=this.stream.get8(),this.marker!==0&&(this.markerIndex=9)),e[0]|=s):r[0]-=8,o=t[e[0]>>r[0]],o&a.MSB){if(this.markerIndex!==0)return this.markerIndex=0,65280|this.marker;e[0]&=65535>>16-r[0],e[0]<<=8,s=this.stream.get8(),s===255&&(this.marker=this.stream.get8(),this.marker!==0&&(this.markerIndex=9)),e[0]|=s,o=t[(o&255)*256+(e[0]>>r[0])],r[0]+=8}if(r[0]+=8-(o>>8),r[0]<0)throw new Error("index="+r[0]+" temp="+e[0]+" code="+o+" in HuffmanValue()");return r[0]<this.markerIndex?(this.markerIndex=0,65280|this.marker):(e[0]&=65535>>16-r[0],o&255)}getn(t,e,r,o){let s,i;if(this.stream===null)throw new Error("stream not initialized");if(e===0)return 0;if(e===16)return t[0]>=0?-32768:32768;if(o[0]-=e,o[0]>=0){if(o[0]<this.markerIndex&&!this.isLastPixel())return this.markerIndex=0,(65280|this.marker)<<8;s=r[0]>>o[0],r[0]&=65535>>16-o[0]}else{if(r[0]<<=8,i=this.stream.get8(),i===255&&(this.marker=this.stream.get8(),this.marker!==0&&(this.markerIndex=9)),r[0]|=i,o[0]+=8,o[0]<0){if(this.markerIndex!==0)return this.markerIndex=0,(65280|this.marker)<<8;r[0]<<=8,i=this.stream.get8(),i===255&&(this.marker=this.stream.get8(),this.marker!==0&&(this.markerIndex=9)),r[0]|=i,o[0]+=8}if(o[0]<0)throw new Error("index="+o[0]+" in getn()");if(o[0]<this.markerIndex)return this.markerIndex=0,(65280|this.marker)<<8;s=r[0]>>o[0],r[0]&=65535>>16-o[0]}return s<1<<e-1&&(s+=(-1<<e)+1),s}getPreviousX(t=0){if(this.getter===null)throw new Error("decode hasn't run yet");return this.xLoc>0?this.getter(this.yLoc*this.xDim+this.xLoc-1,t):this.yLoc>0?this.getPreviousY(t):1<<this.frame.precision-1}getPreviousXY(t=0){if(this.getter===null)throw new Error("decode hasn't run yet");return this.xLoc>0&&this.yLoc>0?this.getter((this.yLoc-1)*this.xDim+this.xLoc-1,t):this.getPreviousY(t)}getPreviousY(t=0){if(this.getter===null)throw new Error("decode hasn't run yet");return this.yLoc>0?this.getter((this.yLoc-1)*this.xDim+this.xLoc,t):this.getPreviousX(t)}isLastPixel(){return this.xLoc===this.xDim-1&&this.yLoc===this.yDim-1}outputSingle(t){if(this.setter===null)throw new Error("decode hasn't run yet");this.xLoc<this.xDim&&this.yLoc<this.yDim&&(this.setter(this.yLoc*this.xDim+this.xLoc,this.mask&t[0]),this.xLoc+=1,this.xLoc>=this.xDim&&(this.yLoc+=1,this.xLoc=0))}outputRGB(t){if(this.setter===null)throw new Error("decode hasn't run yet");let e=this.yLoc*this.xDim+this.xLoc;this.xLoc<this.xDim&&this.yLoc<this.yDim&&(this.setter(e,t[0],0),this.setter(e,t[1],1),this.setter(e,t[2],2),this.xLoc+=1,this.xLoc>=this.xDim&&(this.yLoc+=1,this.xLoc=0))}setValue8(t,e){if(!this.outputData)throw new Error("output data not ready");D?this.outputData[t]=e:this.outputData[t]=(e&255)<<8|e>>8&255}getValue8(t){if(this.outputData===null)throw new Error("output data not ready");if(D)return this.outputData[t];{let e=this.outputData[t];return(e&255)<<8|e>>8&255}}setValueRGB(t,e,r=0){this.outputData!==null&&(this.outputData[t*3+r]=e)}getValueRGB(t,e){if(this.outputData===null)throw new Error("output data not ready");return this.outputData[t*3+e]}readApp(){if(this.stream===null)return null;let t=0,e=this.stream.get16();for(t+=2;t<e;)this.stream.get8(),t+=1;return e}readComment(){if(this.stream===null)return null;let t="",e=0,r=this.stream.get16();for(e+=2;e<r;)t+=this.stream.get8(),e+=1;return t}readNumber(){if(this.stream===null)return null;if(this.stream.get16()!==4)throw new Error("ERROR: Define number format throw new IOException [Ld!=4]");return this.stream.get16()}};window.JpegLossless={Decoder:E,Utils:k};;})();
+</script>
+
+<script>
+'use strict';
+
+const state = {
+  allSeries: [],      // [{ uid, description, modality, slices, meta, sliceBrightness, notables }]
+  currentSeries: 0,
+  slices: [],         // alias to active series' slices
+  metadata: {},       // alias to active series' meta
+  studyDescription: '',
+  currentSlice: 0,
+  totalSlices: 0,
+  zoom: 1,
+  panX: 0,
+  panY: 0,
+  brightness: 100,
+  contrast: 100,
+  compareMode: false,
+  referenceSlice: 0,
+};
+
+/* ---------- Status helper ---------- */
+
+function showStatus(msg, ms = 1500) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(showStatus._t);
+  showStatus._t = setTimeout(() => el.classList.remove('show'), ms);
+}
+
+/* ---------- Folder collection ---------- */
+
+async function collectFiles(dataTransfer) {
+  const out = [];
+  const items = dataTransfer.items;
+  if (items && items.length && items[0].webkitGetAsEntry) {
+    const entries = [];
+    for (const it of items) {
+      const e = it.webkitGetAsEntry && it.webkitGetAsEntry();
+      if (e) entries.push(e);
+    }
+    for (const e of entries) await walkEntry(e, out);
+  } else {
+    for (const f of dataTransfer.files) out.push(f);
+  }
+  return out;
+}
+
+function walkEntry(entry, out) {
+  return new Promise(resolve => {
+    if (entry.isFile) {
+      entry.file(f => { out.push(f); resolve(); }, () => resolve());
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const readBatch = () => {
+        reader.readEntries(async batch => {
+          if (!batch.length) return resolve();
+          for (const e of batch) await walkEntry(e, out);
+          readBatch();
+        }, () => resolve());
+      };
+      readBatch();
+    } else {
+      resolve();
+    }
+  });
+}
+
+function looksLikeDicom(file) {
+  const n = (file.name || '').toLowerCase();
+  if (n.endsWith('.dcm') || n.endsWith('.dicom')) return true;
+  if (n.startsWith('.')) return false; // hidden
+  // Many scanners produce extensionless files. Allow them; parser will reject non-DICOM.
+  return !n.includes('.') || n.endsWith('.ima');
+}
+
+/* ---------- DICOM parsing ---------- */
+
+function readAsArrayBuffer(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+    r.readAsArrayBuffer(file);
+  });
+}
+
+function autoWindow(pixels) {
+  // 1%–99% percentile via sampled sort
+  const stride = Math.max(1, Math.floor(pixels.length / 20000));
+  const samples = [];
+  for (let i = 0; i < pixels.length; i += stride) samples.push(pixels[i]);
+  samples.sort((a, b) => a - b);
+  const lo = samples[Math.floor(samples.length * 0.01)];
+  const hi = samples[Math.floor(samples.length * 0.99)];
+  const width = Math.max(hi - lo, 1);
+  const center = (hi + lo) / 2;
+  return { center, width };
+}
+
+function applyWindow(pixels, center, width, invert) {
+  const lo = center - width / 2;
+  const hi = center + width / 2;
+  const span = Math.max(hi - lo, 1);
+  const out = new Uint8ClampedArray(pixels.length);
+  for (let i = 0; i < pixels.length; i++) {
+    let v = pixels[i];
+    v = ((v - lo) / span) * 255;
+    if (invert) v = 255 - v;
+    out[i] = v;
+  }
+  return out;
+}
+
+function meanBrightness(arr) {
+  let s = 0;
+  for (let i = 0; i < arr.length; i += 16) s += arr[i];
+  return s / (arr.length / 16);
+}
+
+function decodeRLE(rleBytes, expectedBytes) {
+  const out = new Uint8Array(expectedBytes);
+  const dv = new DataView(rleBytes.buffer, rleBytes.byteOffset, rleBytes.byteLength);
+  const numSegments = dv.getUint32(0, true);
+  if (numSegments < 1 || numSegments > 15) throw new Error('bad RLE header');
+  const offsets = [];
+  for (let i = 0; i < numSegments; i++) offsets.push(dv.getUint32(4 + i * 4, true));
+  const segLen = Math.floor(expectedBytes / numSegments);
+  for (let seg = 0; seg < numSegments; seg++) {
+    let inPos = offsets[seg];
+    const inEnd = (seg + 1 < numSegments) ? offsets[seg + 1] : rleBytes.length;
+    let outPos = seg;
+    const outEnd = seg + segLen * numSegments;
+    while (inPos < inEnd && outPos < outEnd) {
+      const n = rleBytes[inPos++] << 24 >> 24; // sign-extend int8
+      if (n >= 0) {
+        const count = n + 1;
+        for (let i = 0; i < count && inPos < inEnd && outPos < outEnd; i++) {
+          out[outPos] = rleBytes[inPos++];
+          outPos += numSegments;
+        }
+      } else if (n !== -128) {
+        const count = -n + 1;
+        const v = rleBytes[inPos++];
+        for (let i = 0; i < count && outPos < outEnd; i++) {
+          out[outPos] = v;
+          outPos += numSegments;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+function decodePixels(dataSet, byteArray) {
+  const pixelEl = dataSet.elements.x7fe00010;
+  if (!pixelEl) return null;
+  const rows = dataSet.uint16('x00280010');
+  const cols = dataSet.uint16('x00280011');
+  if (!rows || !cols) return null;
+  const bitsAllocated = dataSet.uint16('x00280100') || 16;
+  const pixelRepresentation = dataSet.uint16('x00280103') || 0;
+  const samplesPerPixel = dataSet.uint16('x00280002') || 1;
+  if (samplesPerPixel !== 1) return { unsupported: 'color (multi-sample) DICOM' };
+
+  const transferSyntax = (dataSet.string('x00020010') || '').trim();
+  const numPx = rows * cols;
+  const bytesPerSample = Math.ceil(bitsAllocated / 8);
+
+  const TS_IMPLICIT_LE = '1.2.840.10008.1.2';
+  const TS_EXPLICIT_LE = '1.2.840.10008.1.2.1';
+  const TS_EXPLICIT_BE = '1.2.840.10008.1.2.2';
+  const TS_RLE         = '1.2.840.10008.1.2.5';
+  const TS_JPEG_LL_57  = '1.2.840.10008.1.2.4.57';
+  const TS_JPEG_LL_70  = '1.2.840.10008.1.2.4.70';
+
+  const isUncompressed = !transferSyntax
+    || transferSyntax === TS_IMPLICIT_LE
+    || transferSyntax === TS_EXPLICIT_LE
+    || transferSyntax === TS_EXPLICIT_BE;
+
+  let raw, signed = pixelRepresentation === 1;
+
+  if (isUncompressed) {
+    const offset = pixelEl.dataOffset;
+    const expected = numPx * bytesPerSample;
+    if (byteArray.length < offset + expected) return null;
+    const bigEndian = transferSyntax === TS_EXPLICIT_BE;
+    if (bitsAllocated === 8) {
+      raw = signed
+        ? new Int8Array(byteArray.buffer, byteArray.byteOffset + offset, numPx).slice()
+        : new Uint8Array(byteArray.buffer, byteArray.byteOffset + offset, numPx).slice();
+    } else if (bitsAllocated === 16) {
+      const Ctor = signed ? Int16Array : Uint16Array;
+      if (!bigEndian && (byteArray.byteOffset + offset) % 2 === 0) {
+        raw = new Ctor(byteArray.buffer, byteArray.byteOffset + offset, numPx).slice();
+      } else {
+        raw = new Ctor(numPx);
+        const dv = new DataView(byteArray.buffer, byteArray.byteOffset + offset, numPx * 2);
+        const reader = signed ? dv.getInt16.bind(dv) : dv.getUint16.bind(dv);
+        for (let i = 0; i < numPx; i++) raw[i] = reader(i * 2, !bigEndian);
+      }
+    } else {
+      return { unsupported: `${bitsAllocated}-bit pixels` };
+    }
+  } else if (transferSyntax === TS_RLE) {
+    const fragment = dicomParser.readEncapsulatedPixelDataFromFragments(dataSet, pixelEl, 0);
+    const rgbBytes = decodeRLE(fragment, numPx * bytesPerSample);
+    if (bitsAllocated === 8) {
+      raw = signed ? new Int8Array(rgbBytes.buffer, rgbBytes.byteOffset, numPx)
+                   : new Uint8Array(rgbBytes.buffer, rgbBytes.byteOffset, numPx);
+    } else if (bitsAllocated === 16) {
+      const Ctor = signed ? Int16Array : Uint16Array;
+      raw = new Ctor(numPx);
+      for (let i = 0; i < numPx; i++) {
+        raw[i] = (rgbBytes[i * 2 + 1] << 8) | rgbBytes[i * 2];
+        if (signed && raw[i] >= 0x8000) raw[i] -= 0x10000;
+      }
+    } else {
+      return { unsupported: `${bitsAllocated}-bit RLE` };
+    }
+  } else if (transferSyntax === TS_JPEG_LL_57 || transferSyntax === TS_JPEG_LL_70) {
+    if (typeof window.JpegLossless === 'undefined') {
+      return { unsupported: `JPEG-Lossless (decoder not loaded)` };
+    }
+    const fragment = dicomParser.readEncapsulatedPixelDataFromFragments(dataSet, pixelEl, 0);
+    const decoder = new window.JpegLossless.Decoder();
+    const decodedBuf = decoder.decode(fragment.buffer, fragment.byteOffset, fragment.byteLength, bytesPerSample).buffer;
+    if (bitsAllocated === 8) {
+      raw = signed ? new Int8Array(decodedBuf).slice() : new Uint8Array(decodedBuf).slice();
+    } else if (bitsAllocated === 16) {
+      const Ctor = signed ? Int16Array : Uint16Array;
+      raw = new Ctor(decodedBuf).slice(0, numPx);
+    } else {
+      return { unsupported: `${bitsAllocated}-bit JPEG-Lossless` };
+    }
+  } else {
+    return { unsupported: `transfer syntax ${transferSyntax}` };
+  }
+
+  // Mask off unused high bits per BitsStored if smaller than BitsAllocated
+  const bitsStored = dataSet.uint16('x00280101') || bitsAllocated;
+  if (bitsStored < bitsAllocated && !signed) {
+    const mask = (1 << bitsStored) - 1;
+    for (let i = 0; i < raw.length; i++) raw[i] &= mask;
+  }
+
+  const slope = dataSet.floatString('x00281053');
+  const intercept = dataSet.floatString('x00281052');
+  const rescaled = new Float32Array(raw.length);
+  const m = (typeof slope === 'number' && !isNaN(slope)) ? slope : 1;
+  const b = (typeof intercept === 'number' && !isNaN(intercept)) ? intercept : 0;
+  for (let i = 0; i < raw.length; i++) rescaled[i] = raw[i] * m + b;
+
+  return { rows, cols, pixels: rescaled };
+}
+
+async function parseFolder(files) {
+  const drop = document.getElementById('drop');
+  const prog = document.getElementById('progress');
+  const errEl = document.getElementById('drop-err');
+  drop.style.display = 'none';
+  prog.classList.add('show');
+  errEl.textContent = '';
+
+  const candidates = files.filter(looksLikeDicom);
+  const total = candidates.length || files.length;
+  const list = candidates.length ? candidates : files;
+
+  const slices = [];
+  const seriesMetaMap = new Map();
+  let processed = 0;
+  const skippedReasons = new Map();
+
+  const progbar = document.getElementById('progbar');
+  const progtext = document.getElementById('progtext');
+
+  for (const file of list) {
+    processed++;
+    progtext.textContent = `${processed} / ${total}  —  ${file.name}`;
+    progbar.style.width = ((processed / total) * 100) + '%';
+    if (processed % 4 === 0) await new Promise(r => setTimeout(r, 0));
+
+    try {
+      const buf = await readAsArrayBuffer(file);
+      const byteArray = new Uint8Array(buf);
+      const dataSet = dicomParser.parseDicom(byteArray);
+
+      let decoded;
+      try {
+        decoded = decodePixels(dataSet, byteArray);
+      } catch (e) {
+        const ts = (dataSet.string('x00020010') || 'unknown').trim();
+        skippedReasons.set(ts, (skippedReasons.get(ts) || 0) + 1);
+        continue;
+      }
+      if (!decoded) continue;
+      if (decoded.unsupported) {
+        const k = String(decoded.unsupported);
+        skippedReasons.set(k, (skippedReasons.get(k) || 0) + 1);
+        continue;
+      }
+
+      const { rows, cols, pixels } = decoded;
+
+      const wcRaw = dataSet.floatString('x00281050');
+      const wwRaw = dataSet.floatString('x00281051');
+      let center, width;
+      if (typeof wcRaw === 'number' && typeof wwRaw === 'number' && wwRaw > 0) {
+        center = wcRaw; width = wwRaw;
+      } else {
+        ({ center, width } = autoWindow(pixels));
+      }
+
+      const photo = (dataSet.string('x00280004') || '').trim();
+      const invert = photo === 'MONOCHROME1';
+
+      const windowed = applyWindow(pixels, center, width, invert);
+      const instanceNumber = parseInt(dataSet.string('x00200013') || '0', 10) || 0;
+
+      // Compute physical slice position for ordering. Prefer the projection of
+      // ImagePositionPatient onto the slice normal (ImageOrientationPatient × ).
+      // Fall back to SliceLocation, then InstanceNumber.
+      let slicePos = null;
+      const ipp = dataSet.string('x00200032');
+      const iop = dataSet.string('x00200037');
+      if (ipp) {
+        const p = ipp.split('\\').map(Number);
+        if (p.length >= 3 && p.every(v => !isNaN(v))) {
+          if (iop) {
+            const o = iop.split('\\').map(Number);
+            if (o.length >= 6 && o.every(v => !isNaN(v))) {
+              const nx = o[1] * o[5] - o[2] * o[4];
+              const ny = o[2] * o[3] - o[0] * o[5];
+              const nz = o[0] * o[4] - o[1] * o[3];
+              slicePos = p[0] * nx + p[1] * ny + p[2] * nz;
+            }
+          }
+          if (slicePos === null) slicePos = p[2];
+        }
+      }
+      if (slicePos === null) {
+        const sl = dataSet.floatString('x00201041');
+        if (typeof sl === 'number' && !isNaN(sl)) slicePos = sl;
+      }
+
+      const echoTime = dataSet.floatString('x00180081');
+      const seriesUid = dataSet.string('x0020000e') || '_default';
+      const seriesNumber = parseInt(dataSet.string('x00200011') || '0', 10) || 0;
+      const seriesDescription = (dataSet.string('x0008103e') || '').trim();
+      const modality = (dataSet.string('x00080060') || '').trim();
+
+      slices.push({
+        rows, cols, windowed,
+        instanceNumber,
+        slicePos,
+        echoTime: (typeof echoTime === 'number' && !isNaN(echoTime)) ? echoTime : null,
+        brightness: meanBrightness(windowed),
+        name: file.name,
+        seriesUid, seriesNumber, seriesDescription, modality,
+      });
+
+      if (!seriesMetaMap.has(seriesUid)) {
+        const ps = dataSet.string('x00280030');
+        let psStr = 'unknown';
+        if (ps) {
+          const parts = ps.split('\\').map(p => parseFloat(p));
+          if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+            psStr = `${parts[0].toFixed(2)}mm x ${parts[1].toFixed(2)}mm`;
+          }
+        }
+        const st = dataSet.floatString('x00180050');
+        seriesMetaMap.set(seriesUid, {
+          patient_id: 'ANON',
+          study_description: dataSet.string('x00081030') || '',
+          series_description: seriesDescription || `Series ${seriesNumber}`,
+          modality: modality,
+          slice_thickness: (typeof st === 'number' && !isNaN(st)) ? `${st.toFixed(1)}mm` : 'unknown',
+          pixel_spacing: psStr,
+          rows, cols,
+          window_center: Math.round(center * 100) / 100,
+          window_width: Math.round(width * 100) / 100,
+        });
+      }
+    } catch (_) {
+      // skip non-DICOM or corrupt
+    }
+  }
+
+  if (slices.length === 0) {
+    prog.classList.remove('show');
+    drop.style.display = 'flex';
+    if (skippedReasons.size > 0) {
+      const lines = [...skippedReasons.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([reason, count]) => `${count} × ${reason}`);
+      errEl.textContent = `Could not decode any slices. Skipped: ${lines.join(', ')}`;
+    } else {
+      errEl.textContent = 'No DICOM images found in that folder.';
+    }
+    return;
+  }
+
+  // Group slices by SeriesInstanceUID, then sort each series independently.
+  const groups = new Map();
+  for (const s of slices) {
+    if (!groups.has(s.seriesUid)) groups.set(s.seriesUid, []);
+    groups.get(s.seriesUid).push(s);
+  }
+
+  const allSeries = [];
+  for (const [uid, sliceList] of groups.entries()) {
+    const havePos = sliceList.some(s => s.slicePos !== null);
+    sliceList.sort((a, b) => {
+      if (havePos) {
+        const ap = a.slicePos, bp = b.slicePos;
+        if (ap !== null && bp !== null && ap !== bp) return ap - bp;
+        if (ap !== null && bp === null) return -1;
+        if (ap === null && bp !== null) return 1;
+      }
+      if (a.echoTime !== null && b.echoTime !== null && a.echoTime !== b.echoTime) {
+        return a.echoTime - b.echoTime;
+      }
+      if (a.instanceNumber !== b.instanceNumber) return a.instanceNumber - b.instanceNumber;
+      return a.name.localeCompare(b.name);
+    });
+
+    let sortInfo = `Instance order`;
+    if (havePos) {
+      const positions = sliceList.map(s => s.slicePos).filter(v => v !== null).sort((a, b) => a - b);
+      const unique = [];
+      const eps = 0.01;
+      for (const p of positions) {
+        if (unique.length === 0 || Math.abs(unique[unique.length - 1] - p) > eps) unique.push(p);
+      }
+      if (unique.length > 1) {
+        const spacings = [];
+        for (let i = 1; i < unique.length; i++) spacings.push(unique[i] - unique[i - 1]);
+        const avgSpacing = spacings.reduce((a, b) => a + b, 0) / spacings.length;
+        const echoes = sliceList.length / Math.max(unique.length, 1);
+        sortInfo = `${unique.length} positions · ${avgSpacing.toFixed(2)}mm`;
+        if (echoes >= 1.5) sortInfo += ` · ${Math.round(echoes)} echoes/pos`;
+      }
+    }
+
+    const meta = { ...(seriesMetaMap.get(uid) || {}) };
+    meta.total_slices = sliceList.length;
+    meta.slice_order = sortInfo;
+
+    allSeries.push({
+      uid,
+      seriesNumber: sliceList[0].seriesNumber || 0,
+      description: sliceList[0].seriesDescription || `Series ${sliceList[0].seriesNumber || ''}`.trim(),
+      modality: sliceList[0].modality || '',
+      slices: sliceList,
+      meta,
+      sliceBrightness: sliceList.map(s => s.brightness),
+    });
+  }
+
+  allSeries.sort((a, b) => a.seriesNumber - b.seriesNumber || a.description.localeCompare(b.description));
+
+  // Pick a sensible default: largest series that isn't a localizer/scout.
+  let defaultIdx = 0, bestSize = -1;
+  for (let i = 0; i < allSeries.length; i++) {
+    const d = (allSeries[i].description || '').toLowerCase();
+    const isScout = /localizer|scout|survey/.test(d);
+    const score = (isScout ? 0 : 1000) + allSeries[i].slices.length;
+    if (score > bestSize) { bestSize = score; defaultIdx = i; }
+  }
+
+  state.allSeries = allSeries;
+  state.studyDescription = (seriesMetaMap.values().next().value || {}).study_description || '';
+
+  prog.classList.remove('show');
+  renderSeriesList();
+  loadSeries(defaultIdx);
+  document.getElementById('app').classList.add('show');
+}
+
+/* ---------- Drop / pick wiring ---------- */
+
+function setupDrop() {
+  const drop = document.getElementById('drop');
+  const picker = document.getElementById('picker');
+
+  document.getElementById('pick-btn').addEventListener('click', () => picker.click());
+
+  picker.addEventListener('change', async () => {
+    const files = Array.from(picker.files || []);
+    if (files.length) parseFolder(files);
+  });
+
+  ['dragenter', 'dragover'].forEach(evt => {
+    window.addEventListener(evt, e => {
+      e.preventDefault();
+      drop.classList.add('over');
+    });
+  });
+  ['dragleave', 'drop'].forEach(evt => {
+    window.addEventListener(evt, e => {
+      e.preventDefault();
+      if (evt === 'dragleave' && e.target !== drop && e.relatedTarget) return;
+      drop.classList.remove('over');
+    });
+  });
+  window.addEventListener('drop', async e => {
+    e.preventDefault();
+    drop.classList.remove('over');
+    if (drop.style.display === 'none') return; // ignore drops once viewer is open
+    const files = await collectFiles(e.dataTransfer);
+    if (files.length) parseFolder(files);
+  });
+}
+
+/* ---------- Viewer ---------- */
+
+function fitCanvas(canvas) {
+  const wrap = canvas.parentElement;
+  const cw = wrap.clientWidth, ch = wrap.clientHeight;
+  if (!cw || !ch || !canvas.width || !canvas.height) return;
+  const ar = canvas.width / canvas.height;
+  let dw, dh;
+  if (cw / ch > ar) { dh = ch; dw = ch * ar; }
+  else              { dw = cw; dh = cw / ar; }
+  canvas.style.width = Math.floor(dw) + 'px';
+  canvas.style.height = Math.floor(dh) + 'px';
+}
+
+function drawSlice(canvas, idx) {
+  const s = state.slices[idx];
+  if (!s) return;
+  canvas.width = s.cols;
+  canvas.height = s.rows;
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(s.cols, s.rows);
+  const w = s.windowed;
+  const data = img.data;
+  for (let i = 0, j = 0; i < w.length; i++, j += 4) {
+    const v = w[i];
+    data[j] = v; data[j + 1] = v; data[j + 2] = v; data[j + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  fitCanvas(canvas);
+}
+
+function applyTransform(canvas) {
+  canvas.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
+  canvas.style.filter = `brightness(${state.brightness}%) contrast(${state.contrast}%)`;
+}
+function applyTransformAll() {
+  applyTransform(document.getElementById('canvas-main'));
+  applyTransform(document.getElementById('canvas-ref'));
+}
+
+function showSlice(idx) {
+  idx = Math.max(0, Math.min(state.totalSlices - 1, idx));
+  state.currentSlice = idx;
+  drawSlice(document.getElementById('canvas-main'), idx);
+  applyTransform(document.getElementById('canvas-main'));
+  document.getElementById('counter-top').textContent = idx + 1;
+  document.getElementById('counter-bottom').textContent = idx + 1;
+  document.getElementById('slice-num-main').textContent = `${idx + 1} / ${state.totalSlices}`;
+  document.getElementById('slider').value = idx;
+  updateHeatmapPos();
+}
+
+function showReference(idx) {
+  state.referenceSlice = idx;
+  drawSlice(document.getElementById('canvas-ref'), idx);
+  applyTransform(document.getElementById('canvas-ref'));
+  document.getElementById('slice-num-ref').textContent = `${idx + 1} / ${state.totalSlices}`;
+}
+
+function resetView() {
+  state.zoom = 1; state.panX = 0; state.panY = 0;
+  state.brightness = 100; state.contrast = 100;
+  applyTransformAll();
+  showStatus('VIEW RESET');
+}
+
+function toggleCompare() {
+  state.compareMode = !state.compareMode;
+  document.getElementById('panel-ref').style.display = state.compareMode ? 'block' : 'none';
+  document.getElementById('btn-compare').classList.toggle('active', state.compareMode);
+  if (state.compareMode) {
+    showReference(state.currentSlice);
+    showStatus('COMPARE ON');
+  } else {
+    showStatus('COMPARE OFF');
+  }
+}
+
+function toggleInfo() {
+  document.getElementById('main').classList.toggle('no-info');
+  const showing = !document.getElementById('main').classList.contains('no-info');
+  document.getElementById('btn-info').classList.toggle('active', showing);
+}
+
+function toggleNotable() {
+  const el = document.getElementById('notable');
+  el.classList.toggle('show');
+  document.getElementById('btn-notable').classList.toggle('active', el.classList.contains('show'));
+}
+
+function toggleHelp() {
+  const el = document.getElementById('help');
+  el.classList.toggle('show');
+  document.getElementById('btn-help').classList.toggle('active', el.classList.contains('show'));
+}
+
+function renderMetadata(md) {
+  const labels = {
+    total_slices: 'Total Slices',
+    slice_order: 'Slice Order',
+    patient_id: 'Patient ID',
+    study_description: 'Study',
+    series_description: 'Series',
+    modality: 'Modality',
+    slice_thickness: 'Slice Thick.',
+    pixel_spacing: 'Pixel Spacing',
+    rows: 'Rows',
+    cols: 'Cols',
+    window_center: 'Win. Center',
+    window_width: 'Win. Width',
+  };
+  const rows = document.getElementById('info-rows');
+  rows.innerHTML = '';
+  for (const k of Object.keys(labels)) {
+    const div = document.createElement('div');
+    div.className = 'row';
+    const v = md[k];
+    div.innerHTML = `<span class="k">${labels[k]}</span><span class="v">${
+      v === null || v === undefined || v === '' ? '—' : String(v)
+    }</span>`;
+    rows.appendChild(div);
+  }
+}
+
+function computeNotables() {
+  const arr = state.slices.map(s => s.brightness);
+  const sorted = arr.slice().sort((a, b) => a - b);
+  const total = sorted.length;
+  if (total === 0) return { warn: [], danger: [] };
+  const t85 = sorted[Math.floor(total * 0.85)];
+  const t95 = sorted[Math.floor(total * 0.95)];
+  const warn = [];
+  const danger = [];
+  arr.forEach((v, i) => {
+    if (v >= t95) danger.push(i);
+    else if (v >= t85) warn.push(i);
+  });
+  return { warn, danger };
+}
+
+function renderSliderMarks(notables) {
+  const cont = document.getElementById('slider-marks');
+  cont.innerHTML = '';
+  const total = state.totalSlices;
+  if (total <= 1) return;
+  const place = (i, cls) => {
+    const m = document.createElement('div');
+    m.className = 'mark ' + cls;
+    m.style.left = ((i / (total - 1)) * 100) + '%';
+    cont.appendChild(m);
+  };
+  notables.warn.forEach(i => place(i, 'warn'));
+  notables.danger.forEach(i => place(i, 'danger'));
+}
+
+function renderNotableList(notables) {
+  const list = document.getElementById('notable-list');
+  list.innerHTML = '';
+  const items = [
+    ...notables.danger.map(i => ({ i, cls: 'danger', label: 'High' })),
+    ...notables.warn.map(i => ({ i, cls: 'warn', label: 'Notable' })),
+  ].sort((a, b) => a.i - b.i);
+  if (items.length === 0) {
+    list.innerHTML = `<div style="color: var(--muted); padding: 6px 0;">None flagged.</div>`;
+    return;
+  }
+  for (const { i, cls, label } of items) {
+    const d = document.createElement('div');
+    d.className = 'item';
+    d.innerHTML = `<span class="dot ${cls}"></span><span>Slice ${i + 1}</span><span style="color: var(--muted); margin-left: auto;">${label}</span>`;
+    d.addEventListener('click', () => showSlice(i));
+    list.appendChild(d);
+  }
+}
+
+function renderHeatmap() {
+  const canvas = document.getElementById('heatmap-canvas');
+  const cssW = canvas.clientWidth || 80;
+  const cssH = canvas.clientHeight || 400;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.floor(cssW * dpr);
+  canvas.height = Math.floor(cssH * dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, cssW, cssH);
+  const total = state.totalSlices;
+  if (!total) return;
+  const arr = state.slices.map(s => s.brightness);
+  const mn = Math.min(...arr);
+  const mx = Math.max(...arr);
+  const span = Math.max(mx - mn, 1);
+  for (let i = 0; i < total; i++) {
+    const t = (arr[i] - mn) / span;
+    const y = (i / total) * cssH;
+    const h = Math.max(cssH / total, 1);
+    const r = Math.round(t * 255);
+    const g = Math.round(t * 180);
+    const b = Math.round(40 + (1 - t) * 100);
+    ctx.fillStyle = `rgb(${r},${g},${b})`;
+    ctx.fillRect(0, y, cssW, h + 0.5);
+  }
+}
+
+function updateHeatmapPos() {
+  const total = state.totalSlices;
+  if (!total) return;
+  const heat = document.getElementById('heatmap');
+  const pos = document.getElementById('heatmap-pos');
+  pos.style.top = ((state.currentSlice / Math.max(total - 1, 1)) * heat.clientHeight) + 'px';
+}
+
+/* ---------- Input ---------- */
+
+function setupInput() {
+  const canvasArea = document.getElementById('canvas-area');
+
+  canvasArea.addEventListener('wheel', e => {
+    e.preventDefault();
+    if (e.ctrlKey) {
+      const delta = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      state.zoom = Math.max(0.2, Math.min(8, state.zoom * delta));
+      applyTransformAll();
+    } else {
+      const dir = e.deltaY > 0 ? 1 : -1;
+      showSlice(state.currentSlice + dir);
+    }
+  }, { passive: false });
+
+  let dragging = null;
+  canvasArea.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    dragging = {
+      mode: e.altKey ? 'pan' : 'level',
+      startX: e.clientX, startY: e.clientY,
+      startBright: state.brightness,
+      startContrast: state.contrast,
+      startPanX: state.panX, startPanY: state.panY,
+    };
+  });
+  window.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const dx = e.clientX - dragging.startX;
+    const dy = e.clientY - dragging.startY;
+    if (dragging.mode === 'pan') {
+      state.panX = dragging.startPanX + dx;
+      state.panY = dragging.startPanY + dy;
+    } else {
+      state.contrast = Math.max(10, Math.min(400, dragging.startContrast + dx * 0.5));
+      state.brightness = Math.max(10, Math.min(400, dragging.startBright - dy * 0.5));
+    }
+    applyTransformAll();
+  });
+  window.addEventListener('mouseup', () => { dragging = null; });
+  canvasArea.addEventListener('dblclick', resetView);
+
+  const heat = document.getElementById('heatmap');
+  const heatJump = e => {
+    const rect = heat.getBoundingClientRect();
+    const t = (e.clientY - rect.top) / rect.height;
+    showSlice(Math.round(t * (state.totalSlices - 1)));
+  };
+  heat.addEventListener('click', heatJump);
+  let heatDragging = false;
+  heat.addEventListener('mousedown', e => { heatDragging = true; heatJump(e); });
+  window.addEventListener('mouseup', () => { heatDragging = false; });
+  heat.addEventListener('mousemove', e => { if (heatDragging) heatJump(e); });
+
+  const slider = document.getElementById('slider');
+  slider.addEventListener('input', () => showSlice(parseInt(slider.value, 10)));
+
+  document.getElementById('btn-prev').addEventListener('click', () => showSlice(state.currentSlice - 1));
+  document.getElementById('btn-next').addEventListener('click', () => showSlice(state.currentSlice + 1));
+  document.getElementById('btn-compare').addEventListener('click', toggleCompare);
+  document.getElementById('btn-notable').addEventListener('click', toggleNotable);
+  document.getElementById('btn-info').addEventListener('click', toggleInfo);
+  document.getElementById('btn-help').addEventListener('click', toggleHelp);
+  document.getElementById('btn-set-ref').addEventListener('click', e => {
+    e.stopPropagation();
+    showReference(state.currentSlice);
+    showStatus(`REF SET → SLICE ${state.currentSlice + 1}`);
+  });
+  document.getElementById('btn-reload').addEventListener('click', () => {
+    state.slices = []; state.totalSlices = 0;
+    state.allSeries = []; state.currentSeries = 0;
+    document.getElementById('app').classList.remove('show');
+    document.getElementById('drop').style.display = 'flex';
+    document.getElementById('drop-err').textContent = '';
+    document.getElementById('picker').value = '';
+  });
+
+  window.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT') return;
+    switch (e.key) {
+      case 'ArrowUp': case 'ArrowLeft':   e.preventDefault(); showSlice(state.currentSlice - 1); break;
+      case 'ArrowDown': case 'ArrowRight':e.preventDefault(); showSlice(state.currentSlice + 1); break;
+      case 'r': case 'R': resetView(); break;
+      case 'i': case 'I': toggleInfo(); break;
+      case 'c': case 'C': toggleCompare(); break;
+      case '?': case '/': toggleHelp(); break;
+    }
+  });
+
+  window.addEventListener('resize', () => {
+    renderHeatmap();
+    updateHeatmapPos();
+    fitCanvas(document.getElementById('canvas-main'));
+    fitCanvas(document.getElementById('canvas-ref'));
+  });
+}
+
+/* ---------- Series sidebar ---------- */
+
+function makeSeriesThumb(series) {
+  const canvas = document.createElement('canvas');
+  const s = series.slices[Math.floor(series.slices.length / 2)] || series.slices[0];
+  if (!s) return canvas;
+  canvas.width = s.cols;
+  canvas.height = s.rows;
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(s.cols, s.rows);
+  const w = s.windowed;
+  const data = img.data;
+  for (let i = 0, j = 0; i < w.length; i++, j += 4) {
+    const v = w[i];
+    data[j] = v; data[j + 1] = v; data[j + 2] = v; data[j + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return canvas;
+}
+
+function renderSeriesList() {
+  const section = document.getElementById('series-section');
+  const list = document.getElementById('series-list');
+  list.innerHTML = '';
+  if (state.allSeries.length <= 1) {
+    section.classList.add('hidden');
+    return;
+  }
+  section.classList.remove('hidden');
+  state.allSeries.forEach((series, idx) => {
+    const item = document.createElement('div');
+    item.className = 'series-item' + (idx === state.currentSeries ? ' active' : '');
+    item.appendChild(makeSeriesThumb(series));
+    const info = document.createElement('div');
+    info.className = 'si-info';
+    info.innerHTML =
+      `<div class="si-desc">${series.description || `Series ${series.seriesNumber}`}</div>` +
+      `<div class="si-sub">${series.modality || ''} · ${series.slices.length} img</div>`;
+    item.appendChild(info);
+    item.addEventListener('click', () => loadSeries(idx));
+    list.appendChild(item);
+  });
+}
+
+/* ---------- Load a series ---------- */
+
+let inputWired = false;
+function loadSeries(idx) {
+  if (idx < 0 || idx >= state.allSeries.length) return;
+  state.currentSeries = idx;
+  const series = state.allSeries[idx];
+
+  state.slices = series.slices;
+  state.totalSlices = series.slices.length;
+  state.metadata = series.meta;
+
+  // Reset view + reference + brightness/contrast on series switch.
+  state.currentSlice = 0;
+  state.referenceSlice = 0;
+  state.zoom = 1; state.panX = 0; state.panY = 0;
+  state.brightness = 100; state.contrast = 100;
+
+  document.getElementById('counter-total').textContent = state.totalSlices;
+  document.getElementById('counter-total-bottom').textContent = state.totalSlices;
+  document.getElementById('slider').max = Math.max(state.totalSlices - 1, 0);
+  document.getElementById('btn-info').classList.add('active');
+
+  renderMetadata(state.metadata);
+
+  const notables = computeNotables();
+  renderSliderMarks(notables);
+  renderNotableList(notables);
+  renderHeatmap();
+  renderSeriesList();
+
+  if (!inputWired) { setupInput(); inputWired = true; }
+
+  showSlice(0);
+  if (state.compareMode) showReference(0);
+}
+
+/* ---------- Init ---------- */
+
+setupDrop();
+</script>
+</body>
+</html>
