@@ -1,87 +1,72 @@
 # MRI DICOM Web Viewer
 
-A single-file MRI viewer. **No install. No build step. No server.**
-Double-click the HTML file, drag your folder of DICOMs in, view.
+**Live:** https://zitro3d.github.io/mri-viewer/
+
+A single-file MRI viewer. No install, no build step, no server, no internet.
+Open the page, drag your folder of DICOMs in, view.
 
 ---
 
 ## Use it
 
-1. Save / download `index.html` anywhere on your computer.
-2. Double-click it. (Chrome, Edge, Firefox, or Safari.)
-3. Drag a folder of `.dcm` files onto the window — or click **Pick Folder**.
+**Online:** open https://zitro3d.github.io/mri-viewer/
 
-That's it. Parsing happens locally in the browser — nothing is uploaded
-anywhere. Patient identifiers are never displayed.
+**Offline:** download `index.html` from the repo, double-click it. Works in
+any browser (Chrome, Edge, Firefox, Safari) directly from `file://`.
 
-> Internet is required on first open so the page can fetch the DICOM parser
-> (`daikon`) from a CDN. The browser caches it after that, so subsequent
-> opens work offline.
+Then:
 
----
+1. Drag a folder of `.dcm` files onto the window — or click **Pick Folder**.
+2. If the study has multiple series, pick one from the left sidebar.
+3. Scroll with the wheel or arrow keys.
 
-## Update workflow
-
-There is no update workflow. Open the file, drop a different folder, done.
-Click **New Folder** in the top bar to load a different study without
-reloading the page.
+Parsing and rendering happen entirely in the browser. No upload, no network
+call. Patient identifiers are never displayed.
 
 ---
 
 ## Controls
 
-| Key / Action      | Effect                          |
-| ----------------- | ------------------------------- |
-| `↑` / `↓`         | Previous / next slice           |
-| Mouse wheel       | Scroll slices                   |
-| `Ctrl` + wheel    | Zoom                            |
-| `Alt` + drag      | Pan                             |
-| Drag (no modifier)| Brightness (Y) / Contrast (X)   |
-| `R` or dbl-click  | Reset view                      |
-| `I`               | Toggle metadata panel           |
-| `C`               | Toggle compare mode             |
-| `?`               | Toggle help                     |
+| Key / Action       | Effect                          |
+| ------------------ | ------------------------------- |
+| `↑` / `↓`          | Previous / next slice           |
+| Mouse wheel        | Scroll slices                   |
+| `Ctrl` + wheel     | Zoom                            |
+| `Alt` + drag       | Pan                             |
+| Drag (no modifier) | Brightness (Y) / Contrast (X)   |
+| `R` or dbl-click   | Reset view                      |
+| `I`                | Toggle metadata panel           |
+| `C`                | Toggle compare mode             |
+| `?`                | Toggle help                     |
 
-In compare mode, **Set Reference** locks the left panel so you can scrub the
-right panel against a fixed slice.
+In compare mode, **Set Reference** locks the left panel so you can scrub
+the right panel against a fixed slice.
 
-The right-edge **heatmap strip** colors each slice by mean brightness — click
-or drag to jump. Notable slices (top 15% bright = yellow, top 5% = red) are
-flagged on the bottom slider and listed in the **Notable** panel.
-
----
-
-## (Optional) Host on GitHub Pages
-
-If you want a URL instead of a local file:
-
-```bash
-git add index.html
-git commit -m "MRI viewer"
-git push
-```
-
-Then **Settings → Pages → Deploy from main /root** in your repo.
-The viewer never uploads or stores DICOM data — folders are read locally
-even when the page is loaded from a public URL.
+The right-edge **heatmap strip** colors each slice by mean brightness —
+click or drag to jump. Notable slices (top 15% bright = yellow, top 5% =
+red) are flagged on the bottom slider and listed in the **Notable** panel.
 
 ---
 
 ## What it can read
 
-- Uncompressed DICOM (Implicit/Explicit VR Little Endian) — virtually all MRI
-  and CT exports.
-- Most JPEG-Lossless / JPEG-LS / RLE transfer syntaxes (via `daikon`).
-- Files with or without a `.dcm` extension.
+- Uncompressed DICOM (Implicit / Explicit VR Little / Big Endian) — covers
+  virtually all MRI and CT exports.
+- JPEG-Lossless (`1.2.840.10008.1.2.4.57` / `.70`) — the default for most
+  clinical MRI/CT.
+- RLE Lossless (`1.2.840.10008.1.2.5`).
+- Files with or without a `.dcm` extension. Non-DICOM files are skipped.
 
-If a file in the folder isn't a DICOM, it's silently skipped.
+If anything else is encountered, the drop screen prints which transfer
+syntaxes were skipped so a decoder can be added.
 
 ---
 
 ## Privacy
 
 Everything stays on your machine. The page reads your folder via the
-browser's File API — no upload, no network call other than the one-time
-fetch of the parser library. Patient identifiers parsed from the DICOMs
-are intentionally not displayed; the metadata panel shows only study,
-series, modality, geometry, and windowing.
+browser's File API — no upload, no remote API calls. The DICOM parser
+(`dicom-parser`) and JPEG-Lossless decoder (`jpeg-lossless-decoder-js`)
+are bundled inline in `index.html`. Patient identifiers parsed from the
+DICOMs are intentionally not displayed; the metadata panel shows only
+study, series, modality, geometry, and windowing.
