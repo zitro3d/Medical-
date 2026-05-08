@@ -1,80 +1,30 @@
 # MRI DICOM Web Viewer
 
-A self-contained, single-page MRI viewer that reads a folder of DICOM files,
-converts them to PNGs with a small Python script, and serves them through a
-single `index.html` with brightness/contrast, zoom/pan, compare mode, an
-auto-generated heatmap, and notable-slice flagging.
-
-No build step. No frameworks. Vanilla JS + a Python converter.
+A single-file MRI viewer. **No install. No build step. No server.**
+Double-click the HTML file, drag your folder of DICOMs in, view.
 
 ---
 
-## Setup
+## Use it
 
-```bash
-pip install pydicom pillow numpy
-```
+1. Save / download `index.html` anywhere on your computer.
+2. Double-click it. (Chrome, Edge, Firefox, or Safari.)
+3. Drag a folder of `.dcm` files onto the window — or click **Pick Folder**.
 
-Drop your DICOM files into `./dicoms/`:
+That's it. Parsing happens locally in the browser — nothing is uploaded
+anywhere. Patient identifiers are never displayed.
 
-```
-dicoms/
-├── IM0001.dcm
-├── IM0002.dcm
-└── ...
-```
-
-## Convert
-
-```bash
-python convert_dicoms.py
-```
-
-This will:
-
-- Sort by `InstanceNumber` (falls back to filename)
-- Apply DICOM windowing (`WindowCenter` / `WindowWidth`) or auto-window via
-  1%–99% percentile clipping
-- Save `slices/slice_0001.png`, `slice_0002.png`, … (zero-padded, 4 digits)
-- Write `slices/metadata.json` with study info
-- **Strip patient identifiers** (`PatientName`, `PatientBirthDate`, `PatientID`
-  → `"ANON"`)
-
-Output ends with:
-
-```
-⚠️  Patient identifiers removed from metadata.json
-✅ Converted XX slices → ./slices/ — open index.html to view
-```
-
-## View Locally
-
-```bash
-python -m http.server 8080
-```
-
-Then open <http://localhost:8080/>.
-
-(Opening `index.html` directly via `file://` will not work because the page
-fetches `slices/metadata.json` over HTTP.)
+> Internet is required on first open so the page can fetch the DICOM parser
+> (`daikon`) from a CDN. The browser caches it after that, so subsequent
+> opens work offline.
 
 ---
 
-## Deploy to GitHub Pages
+## Update workflow
 
-```bash
-git add slices/ index.html
-git commit -m "MRI viewer"
-git push
-```
-
-In your repo: **Settings → Pages → Deploy from main /root**.
-
-Visit `https://<your-username>.github.io/<your-repo>/`.
-
-> **Privacy:** medical images are present. Keep the repo private or serve
-> locally only. The converter strips patient identifiers from metadata, but
-> pixel data may still be identifying.
+There is no update workflow. Open the file, drop a different folder, done.
+Click **New Folder** in the top bar to load a different study without
+reloading the page.
 
 ---
 
@@ -86,14 +36,14 @@ Visit `https://<your-username>.github.io/<your-repo>/`.
 | Mouse wheel       | Scroll slices                   |
 | `Ctrl` + wheel    | Zoom                            |
 | `Alt` + drag      | Pan                             |
-| Drag (no mod)     | Brightness (Y) / Contrast (X)   |
+| Drag (no modifier)| Brightness (Y) / Contrast (X)   |
 | `R` or dbl-click  | Reset view                      |
 | `I`               | Toggle metadata panel           |
 | `C`               | Toggle compare mode             |
 | `?`               | Toggle help                     |
 
-In compare mode, **Set Reference** locks the left panel to the current slice
-while you scrub the right panel.
+In compare mode, **Set Reference** locks the left panel so you can scrub the
+right panel against a fixed slice.
 
 The right-edge **heatmap strip** colors each slice by mean brightness — click
 or drag to jump. Notable slices (top 15% bright = yellow, top 5% = red) are
@@ -101,14 +51,37 @@ flagged on the bottom slider and listed in the **Notable** panel.
 
 ---
 
-## File Layout
+## (Optional) Host on GitHub Pages
 
+If you want a URL instead of a local file:
+
+```bash
+git add index.html
+git commit -m "MRI viewer"
+git push
 ```
-/
-├── CLAUDE.md
-├── README.md
-├── convert_dicoms.py
-├── index.html
-├── dicoms/        ← drop .dcm files here
-└── slices/        ← generated PNGs + metadata.json
-```
+
+Then **Settings → Pages → Deploy from main /root** in your repo.
+The viewer never uploads or stores DICOM data — folders are read locally
+even when the page is loaded from a public URL.
+
+---
+
+## What it can read
+
+- Uncompressed DICOM (Implicit/Explicit VR Little Endian) — virtually all MRI
+  and CT exports.
+- Most JPEG-Lossless / JPEG-LS / RLE transfer syntaxes (via `daikon`).
+- Files with or without a `.dcm` extension.
+
+If a file in the folder isn't a DICOM, it's silently skipped.
+
+---
+
+## Privacy
+
+Everything stays on your machine. The page reads your folder via the
+browser's File API — no upload, no network call other than the one-time
+fetch of the parser library. Patient identifiers parsed from the DICOMs
+are intentionally not displayed; the metadata panel shows only study,
+series, modality, geometry, and windowing.

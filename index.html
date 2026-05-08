@@ -1,14 +1,17 @@
 <!DOCTYPE html>
 <!--
-DEPLOYMENT:
-1. python convert_dicoms.py
-2. git add slices/ index.html && git commit -m "MRI viewer" && git push
-3. Settings > Pages > Deploy from main /root
-4. Visit: https://yourusername.github.io/yourrepo/
+  MRI VIEWER — single file, no server, no install.
 
-LOCAL: python -m http.server 8080
+  USAGE:
+    1. Save this file anywhere on disk.
+    2. Double-click to open in a browser (Chrome, Edge, Firefox).
+    3. Drag a folder of .dcm files onto the window — or click "Pick Folder".
 
-PRIVACY: Medical images present. Keep repo private or serve locally only.
+  No internet, no install, no server. The DICOM parser (dicom-parser) is
+  bundled inside this file.
+
+  PRIVACY: Patient identifiers are never displayed and never leave your
+  machine. All parsing happens locally in the browser.
 -->
 <html lang="en">
 <head>
@@ -58,13 +61,47 @@ PRIVACY: Medical images present. Keep repo private or serve locally only.
   button:hover { border-color: var(--accent); color: var(--accent); }
   button.active { border-color: var(--accent); color: var(--accent); }
 
+  /* Drop screen */
+  #drop {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 24px;
+    background: var(--bg);
+    z-index: 900;
+    transition: background 0.15s;
+  }
+  #drop.over { background: #08191c; }
+  #drop .frame {
+    border: 1px dashed var(--border);
+    padding: 48px 64px;
+    text-align: center;
+    transition: border-color 0.15s;
+  }
+  #drop.over .frame { border-color: var(--accent); }
+  #drop .title {
+    color: var(--accent);
+    letter-spacing: 4px;
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 16px;
+  }
+  #drop .hint { color: var(--muted); margin-bottom: 24px; }
+  #drop .or { color: var(--muted); font-size: 11px; margin: 16px 0; }
+  #drop .err { color: var(--danger); font-size: 11px; margin-top: 16px; }
+  #drop input[type=file] { display: none; }
+
+  /* App (hidden until parse done) */
   #app {
-    display: grid;
+    display: none;
     grid-template-rows: 44px 1fr 56px;
     height: 100vh;
   }
+  #app.show { display: grid; }
 
-  /* Top bar */
   #topbar {
     display: flex;
     align-items: center;
@@ -78,7 +115,6 @@ PRIVACY: Medical images present. Keep repo private or serve locally only.
   #topbar .title { color: var(--accent); letter-spacing: 2px; font-weight: 700; }
   #topbar .counter { color: var(--text); }
 
-  /* Main area */
   #main {
     display: grid;
     grid-template-columns: 280px 1fr 80px;
@@ -87,7 +123,6 @@ PRIVACY: Medical images present. Keep repo private or serve locally only.
   }
   #main.no-info { grid-template-columns: 0 1fr 80px; }
 
-  /* Metadata panel */
   #info {
     background: var(--surface);
     border-right: 1px solid var(--border);
@@ -112,8 +147,7 @@ PRIVACY: Medical images present. Keep repo private or serve locally only.
   #info .row .v { color: var(--text); text-align: right; word-break: break-word; }
   #main.no-info #info { display: none; }
 
-  /* Image canvas */
-  #canvas {
+  #canvas-area {
     position: relative;
     background: #000;
     overflow: hidden;
@@ -133,15 +167,12 @@ PRIVACY: Medical images present. Keep repo private or serve locally only.
     align-items: center;
     justify-content: center;
   }
-  .panel img {
+  .panel canvas {
     max-width: 100%;
     max-height: 100%;
     image-rendering: pixelated;
     transform-origin: center center;
     transition: filter 0.05s linear;
-    pointer-events: none;
-    user-select: none;
-    -webkit-user-drag: none;
   }
   .panel .label {
     position: absolute;
@@ -186,7 +217,6 @@ PRIVACY: Medical images present. Keep repo private or serve locally only.
     z-index: 4;
   }
 
-  /* Heatmap strip */
   #heatmap {
     background: var(--surface);
     border-left: 1px solid var(--border);
@@ -194,11 +224,7 @@ PRIVACY: Medical images present. Keep repo private or serve locally only.
     cursor: pointer;
     overflow: hidden;
   }
-  #heatmap canvas {
-    width: 100%;
-    height: 100%;
-    display: block;
-  }
+  #heatmap canvas { width: 100%; height: 100%; display: block; }
   #heatmap .pos {
     position: absolute;
     left: 0;
@@ -209,7 +235,6 @@ PRIVACY: Medical images present. Keep repo private or serve locally only.
     box-shadow: 0 0 4px var(--accent);
   }
 
-  /* Bottom bar */
   #bottombar {
     display: flex;
     align-items: center;
@@ -218,11 +243,7 @@ PRIVACY: Medical images present. Keep repo private or serve locally only.
     background: var(--surface);
     border-top: 1px solid var(--border);
   }
-  #bottombar button {
-    width: 32px;
-    padding: 6px 0;
-    text-align: center;
-  }
+  #bottombar button { width: 32px; padding: 6px 0; text-align: center; }
   #slider-container {
     flex: 1;
     position: relative;
@@ -279,7 +300,6 @@ PRIVACY: Medical images present. Keep repo private or serve locally only.
   #slider-marks .mark.danger { background: var(--danger); top: -2px; }
   #counter { color: var(--muted); min-width: 120px; text-align: right; }
 
-  /* Notable panel (modal) */
   #notable, #help {
     position: fixed;
     top: 60px;
@@ -350,11 +370,11 @@ PRIVACY: Medical images present. Keep repo private or serve locally only.
   }
   #status.show { display: block; }
 
-  #loading {
+  #progress {
     position: fixed;
     inset: 0;
     background: var(--bg);
-    display: flex;
+    display: none;
     align-items: center;
     justify-content: center;
     flex-direction: column;
@@ -363,68 +383,52 @@ PRIVACY: Medical images present. Keep repo private or serve locally only.
     color: var(--accent);
     letter-spacing: 2px;
   }
-  #loading .bar {
-    width: 240px;
+  #progress.show { display: flex; }
+  #progress .bar {
+    width: 320px;
     height: 2px;
     background: var(--border);
     overflow: hidden;
   }
-  #loading .bar div {
+  #progress .bar div {
     height: 100%;
     background: var(--accent);
     width: 0%;
-    transition: width 0.2s;
+    transition: width 0.1s;
   }
-  #loading.hidden { display: none; }
-
-  #error {
-    position: fixed;
-    inset: 0;
-    background: var(--bg);
-    display: none;
-    align-items: center;
-    justify-content: center;
-    flex-direction: column;
-    gap: 12px;
-    z-index: 1001;
-    color: var(--danger);
-    padding: 24px;
-    text-align: center;
-  }
-  #error.show { display: flex; }
-  #error code {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    padding: 8px 12px;
-    color: var(--text);
-  }
+  #progress .label { color: var(--muted); font-size: 11px; }
 </style>
 </head>
 <body>
 
-<div id="loading">
-  <div>LOADING SLICES…</div>
-  <div class="bar"><div id="loadbar"></div></div>
-  <div id="loadtext" style="color: var(--muted); font-size: 11px;">0 / 0</div>
-</div>
-
-<div id="error">
-  <div style="font-size: 16px; letter-spacing: 2px;">NO SLICES FOUND</div>
-  <div style="color: var(--muted);">Run the converter first:</div>
-  <code>python convert_dicoms.py</code>
-  <div style="color: var(--muted); font-size: 11px;">
-    Make sure ./slices/metadata.json exists.
+<!-- Drop screen -->
+<div id="drop">
+  <div class="frame">
+    <div class="title">MRI VIEWER</div>
+    <div class="hint">Drag a folder of <code>.dcm</code> files anywhere on this window</div>
+    <div class="or">— OR —</div>
+    <button id="pick-btn">Pick Folder</button>
+    <input type="file" id="picker" webkitdirectory directory multiple>
+    <div class="err" id="drop-err"></div>
   </div>
 </div>
 
-<div id="app">
+<!-- Parse progress -->
+<div id="progress">
+  <div>PARSING DICOM…</div>
+  <div class="bar"><div id="progbar"></div></div>
+  <div class="label" id="progtext">0 / 0</div>
+</div>
 
+<!-- Viewer -->
+<div id="app">
   <div id="topbar">
     <div class="left">
       <button id="btn-compare" title="Compare mode (C)">Compare</button>
       <button id="btn-notable" title="Notable slices">Notable</button>
       <button id="btn-info" title="Toggle info panel (I)">Info</button>
       <button id="btn-help" title="Help (?)">?</button>
+      <button id="btn-reload" title="Load a different folder">New Folder</button>
     </div>
     <div class="right">
       <span class="title">MRI VIEWER</span>
@@ -438,18 +442,18 @@ PRIVACY: Medical images present. Keep repo private or serve locally only.
       <div id="info-rows"></div>
     </aside>
 
-    <div id="canvas">
-      <div class="panel" id="panel-main">
-        <div class="img-wrap"><img id="img-main" alt=""></div>
-        <div class="scanlines"></div>
-        <div class="slice-num" id="slice-num-main">—</div>
-      </div>
+    <div id="canvas-area">
       <div class="panel" id="panel-ref" style="display:none;">
         <div class="label">REF</div>
         <button class="reference-btn" id="btn-set-ref">Set Reference</button>
-        <div class="img-wrap"><img id="img-ref" alt=""></div>
+        <div class="img-wrap"><canvas id="canvas-ref"></canvas></div>
         <div class="scanlines"></div>
         <div class="slice-num" id="slice-num-ref">—</div>
+      </div>
+      <div class="panel" id="panel-main">
+        <div class="img-wrap"><canvas id="canvas-main"></canvas></div>
+        <div class="scanlines"></div>
+        <div class="slice-num" id="slice-num-main">—</div>
       </div>
     </div>
 
@@ -468,7 +472,6 @@ PRIVACY: Medical images present. Keep repo private or serve locally only.
     <button id="btn-next" title="Next slice (↓)">&gt;</button>
     <div id="counter">Slice <span id="counter-bottom">0</span> / <span id="counter-total-bottom">0</span></div>
   </div>
-
 </div>
 
 <div id="notable">
@@ -491,10 +494,19 @@ PRIVACY: Medical images present. Keep repo private or serve locally only.
 
 <div id="status"></div>
 
+<!-- Bundled DICOM tag parser (dicom-parser, MIT) -->
+<script>
+/*! dicom-parser - 1.8.12 - 2023-02-20 | (c) 2017 Chris Hafey | https://github.com/cornerstonejs/dicomParser */
+!function(e,t){"object"==typeof exports&&"object"==typeof module?module.exports=t(require("zlib")):"function"==typeof define&&define.amd?define("dicom-parser",["zlib"],t):"object"==typeof exports?exports["dicom-parser"]=t(require("zlib")):e.dicomParser=t(e.zlib)}(this,function(r){return a=[function(e,t){e.exports=r},function(e,t,s){"use strict";s.r(t),s.d(t,"isStringVr",function(){return d}),s.d(t,"isPrivateTag",function(){return f}),s.d(t,"parsePN",function(){return a}),s.d(t,"parseTM",function(){return n}),s.d(t,"parseDA",function(){return o}),s.d(t,"explicitElementToString",function(){return l}),s.d(t,"explicitDataSetToJS",function(){return u}),s.d(t,"createJPEGBasicOffsetTable",function(){return p}),s.d(t,"parseDicomDataSetExplicit",function(){return q}),s.d(t,"parseDicomDataSetImplicit",function(){return T}),s.d(t,"readFixedString",function(){return b}),s.d(t,"alloc",function(){return k}),s.d(t,"version",function(){return L}),s.d(t,"bigEndianByteArrayParser",function(){return N}),s.d(t,"ByteStream",function(){return J}),s.d(t,"sharedCopy",function(){return j}),s.d(t,"DataSet",function(){return w}),s.d(t,"findAndSetUNElementLength",function(){return y}),s.d(t,"findEndOfEncapsulatedElement",function(){return g}),s.d(t,"findItemDelimitationItemAndSetElementLength",function(){return x}),s.d(t,"littleEndianByteArrayParser",function(){return M}),s.d(t,"parseDicom",function(){return V}),s.d(t,"readDicomElementExplicit",function(){return B}),s.d(t,"readDicomElementImplicit",function(){return A}),s.d(t,"readEncapsulatedImageFrame",function(){return W}),s.d(t,"readEncapsulatedPixelData",function(){return K}),s.d(t,"readEncapsulatedPixelDataFromFragments",function(){return _}),s.d(t,"readPart10Header",function(){return G}),s.d(t,"readSequenceItemsExplicit",function(){return I}),s.d(t,"readSequenceItemsImplicit",function(){return F}),s.d(t,"readSequenceItem",function(){return S}),s.d(t,"readTag",function(){return h});var r={AE:!0,AS:!0,AT:!1,CS:!0,DA:!0,DS:!0,DT:!0,FL:!1,FD:!1,IS:!0,LO:!0,LT:!0,OB:!1,OD:!1,OF:!1,OW:!1,PN:!0,SH:!0,SL:!1,SQ:!1,SS:!1,ST:!0,TM:!0,UI:!0,UL:!1,UN:void 0,UR:!0,US:!1,UT:!0},d=function(e){return r[e]},f=function(e){e=parseInt(e[4],16);if(isNaN(e))throw"dicomParser.isPrivateTag: cannot parse last character of group";return e%2==1},a=function(e){if(void 0!==e){e=e.split("^");return{familyName:e[0],givenName:e[1],middleName:e[2],prefix:e[3],suffix:e[4]}}};function n(e,t){if(2<=e.length){var r=parseInt(e.substring(0,2),10),a=4<=e.length?parseInt(e.substring(2,4),10):void 0,n=6<=e.length?parseInt(e.substring(4,6),10):void 0,i=8<=e.length?e.substring(7,13):void 0,i=i?parseInt(i,10)*Math.pow(10,6-i.length):void 0;if(t&&(isNaN(r)||void 0!==a&&isNaN(a)||void 0!==n&&isNaN(n)||void 0!==i&&isNaN(i)||r<0||23<r||a&&(a<0||59<a)||n&&(n<0||59<n)||i&&(i<0||999999<i)))throw"invalid TM '".concat(e,"'");return{hours:r,minutes:a,seconds:n,fractionalSeconds:i}}if(t)throw"invalid TM '".concat(e,"'")}function i(e,t,r){return!isNaN(r)&&(0<t&&t<=12&&0<e&&e<=function(e,t){switch(e){case 2:return t%4==0&&t%100||t%400==0?29:28;case 9:case 4:case 6:case 11:return 30;default:return 31}}(t,r))}function o(e,t){if(e&&8===e.length){var r=parseInt(e.substring(0,4),10),a=parseInt(e.substring(4,6),10),n=parseInt(e.substring(6,8),10);if(t&&!0!==i(n,a,r))throw"invalid DA '".concat(e,"'");return{year:r,month:a,day:n}}if(t)throw"invalid DA '".concat(e,"'")}function l(n,e){if(void 0===n||void 0===e)throw"dicomParser.explicitElementToString: missing required parameters";if(void 0===e.vr)throw"dicomParser.explicitElementToString: cannot convert implicit element to string";var t,r=e.vr,i=e.tag;function a(e,t){for(var r="",a=0;a<e;a++)0!==a&&(r+="/"),r+=t.call(n,i,a).toString();return r}if(!0===d(r))t=n.string(i);else{if("AT"===r){var o=n.uint32(i);return void 0===o?void 0:"x".concat((o=o<0?4294967295+o+1:o).toString(16).toUpperCase())}"US"===r?t=a(e.length/2,n.uint16):"SS"===r?t=a(e.length/2,n.int16):"UL"===r?t=a(e.length/4,n.uint32):"SL"===r?t=a(e.length/4,n.int32):"FD"===r?t=a(e.length/8,n.double):"FL"===r&&(t=a(e.length/4,n.float))}return t}function u(e,t){if(void 0===e)throw"dicomParser.explicitDataSetToJS: missing required parameter dataSet";t=t||{omitPrivateAttibutes:!0,maxElementLength:128};var r,a={};for(r in e.elements){var n=e.elements[r];if(!0!==t.omitPrivateAttibutes||!f(r))if(n.items){for(var i=[],o=0;o<n.items.length;o++)i.push(u(n.items[o].dataSet,t));a[r]=i}else{var s=void 0;n.length<t.maxElementLength&&(s=l(e,n)),a[r]=void 0!==s?s:{dataOffset:n.dataOffset,length:n.length}}}return a}function c(e,t){return 255===e.byteArray[t]&&217===e.byteArray[t+1]}function m(e,t,r){for(var a,n,i=r;i<t.fragments.length;i++)if(a=e,n=i,n=t.fragments[n],!(!c(a,n.position+n.length-2)&&!c(a,n.position+n.length-3)))return i}function p(e,t,r){if(void 0===e)throw"dicomParser.createJPEGBasicOffsetTable: missing required parameter dataSet";if(void 0===t)throw"dicomParser.createJPEGBasicOffsetTable: missing required parameter pixelDataElement";if("x7fe00010"!==t.tag)throw"dicomParser.createJPEGBasicOffsetTable: parameter 'pixelDataElement' refers to non pixel data tag (expected tag = x7fe00010'";if(!0!==t.encapsulatedPixelData)throw"dicomParser.createJPEGBasicOffsetTable: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(!0!==t.hadUndefinedLength)throw"dicomParser.createJPEGBasicOffsetTable: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(void 0===t.basicOffsetTable)throw"dicomParser.createJPEGBasicOffsetTable: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(void 0===t.fragments)throw"dicomParser.createJPEGBasicOffsetTable: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(t.fragments.length<=0)throw"dicomParser.createJPEGBasicOffsetTable: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(r&&r.length<=0)throw"dicomParser.createJPEGBasicOffsetTable: parameter 'fragments' must not be zero length";r=r||t.fragments;for(var a=[],n=0;;){a.push(t.fragments[n].offset);var i=m(e,t,n);if(void 0===i||i===t.fragments.length-1)return a;n=i+1}}function h(e){if(void 0===e)throw"dicomParser.readTag: missing required parameter 'byteStream'";var t=256*e.readUint16()*256,e=e.readUint16();return"x".concat("00000000".concat((t+e).toString(16)).substr(-8))}function g(e,t,r){if(void 0===e)throw"dicomParser.findEndOfEncapsulatedElement: missing required parameter 'byteStream'";if(void 0===t)throw"dicomParser.findEndOfEncapsulatedElement: missing required parameter 'element'";if(t.encapsulatedPixelData=!0,t.basicOffsetTable=[],t.fragments=[],"xfffee000"!==h(e))throw"dicomParser.findEndOfEncapsulatedElement: basic offset table not found";for(var a=e.readUint32()/4,n=0;n<a;n++){var i=e.readUint32();t.basicOffsetTable.push(i)}for(var o=e.position;e.position<e.byteArray.length;){var s=h(e),d=e.readUint32();if("xfffee0dd"===s)return e.seek(d),void(t.length=e.position-t.dataOffset);if("xfffee000"!==s)return r&&r.push("unexpected tag ".concat(s," while searching for end of pixel data element with undefined length")),d>e.byteArray.length-e.position&&(d=e.byteArray.length-e.position),t.fragments.push({offset:e.position-o-8,position:e.position,length:d}),e.seek(d),void(t.length=e.position-t.dataOffset);t.fragments.push({offset:e.position-o-8,position:e.position,length:d}),e.seek(d)}r&&r.push("pixel data element ".concat(t.tag," missing sequence delimiter tag xfffee0dd"))}function y(e,t){if(void 0===e)throw"dicomParser.findAndSetUNElementLength: missing required parameter 'byteStream'";for(var r=e.byteArray.length-8;e.position<=r;)if(65534===e.readUint16()){var a=e.readUint16();if(57565===a)return 0!==e.readUint32()&&e.warnings("encountered non zero length following item delimiter at position ".concat(e.position-4," while reading element of undefined length with tag ").concat(t.tag)),void(t.length=e.position-t.dataOffset)}t.length=e.byteArray.length-t.dataOffset,e.seek(e.byteArray.length-e.position)}function b(e,t,r){if(r<0)throw"dicomParser.readFixedString - length cannot be less than 0";if(t+r>e.length)throw"dicomParser.readFixedString: attempt to read past end of buffer";for(var a,n="",i=0;i<r;i++){if(0===(a=e[t+i]))return t+=r,n;n+=String.fromCharCode(a)}return n}function v(e,t){for(var r=0;r<t.length;r++){var a=t[r];a.enumerable=a.enumerable||!1,a.configurable=!0,"value"in a&&(a.writable=!0),Object.defineProperty(e,a.key,a)}}function P(e,t){return void 0!==e.parser?e.parser:t}var w=function(){function a(e,t,r){!function(e,t){if(!(e instanceof t))throw new TypeError("Cannot call a class as a function")}(this,a),this.byteArrayParser=e,this.byteArray=t,this.elements=r}var e,t,r;return e=a,(t=[{key:"uint16",value:function(e,t){e=this.elements[e];if(t=void 0!==t?t:0,e&&0!==e.length)return P(e,this.byteArrayParser).readUint16(this.byteArray,e.dataOffset+2*t)}},{key:"int16",value:function(e,t){e=this.elements[e];if(t=void 0!==t?t:0,e&&0!==e.length)return P(e,this.byteArrayParser).readInt16(this.byteArray,e.dataOffset+2*t)}},{key:"uint32",value:function(e,t){e=this.elements[e];if(t=void 0!==t?t:0,e&&0!==e.length)return P(e,this.byteArrayParser).readUint32(this.byteArray,e.dataOffset+4*t)}},{key:"int32",value:function(e,t){e=this.elements[e];if(t=void 0!==t?t:0,e&&0!==e.length)return P(e,this.byteArrayParser).readInt32(this.byteArray,e.dataOffset+4*t)}},{key:"float",value:function(e,t){e=this.elements[e];if(t=void 0!==t?t:0,e&&0!==e.length)return P(e,this.byteArrayParser).readFloat(this.byteArray,e.dataOffset+4*t)}},{key:"double",value:function(e,t){e=this.elements[e];if(t=void 0!==t?t:0,e&&0!==e.length)return P(e,this.byteArrayParser).readDouble(this.byteArray,e.dataOffset+8*t)}},{key:"numStringValues",value:function(e){e=this.elements[e];if(e&&0<e.length){e=b(this.byteArray,e.dataOffset,e.length).match(/\\/g);return null===e?1:e.length+1}}},{key:"string",value:function(e,t){e=this.elements[e];if(e&&e.Value)return e.Value;if(e&&0<e.length){e=b(this.byteArray,e.dataOffset,e.length);return 0<=t?e.split("\\")[t].trim():e.trim()}}},{key:"text",value:function(e,t){e=this.elements[e];if(e&&0<e.length){e=b(this.byteArray,e.dataOffset,e.length);return 0<=t?e.split("\\")[t].replace(/ +$/,""):e.replace(/ +$/,"")}}},{key:"floatString",value:function(e,t){var r=this.elements[e];if(r&&0<r.length){t=this.string(e,t=void 0!==t?t:0);if(void 0!==t)return parseFloat(t)}}},{key:"intString",value:function(e,t){var r=this.elements[e];if(r&&0<r.length){t=this.string(e,t=void 0!==t?t:0);if(void 0!==t)return parseInt(t)}}},{key:"attributeTag",value:function(e){var t=this.elements[e];if(t&&4===t.length){var r=P(t,this.byteArrayParser).readUint16,e=this.byteArray,t=t.dataOffset;return"x".concat("00000000".concat((256*r(e,t)*256+r(e,t+2)).toString(16)).substr(-8))}}}])&&v(e.prototype,t),r&&v(e,r),Object.defineProperty(e,"prototype",{writable:!1}),a}();function x(e,t){if(void 0===e)throw"dicomParser.readDicomElementImplicit: missing required parameter 'byteStream'";for(var r=e.byteArray.length-8;e.position<=r;)if(65534===e.readUint16()){var a=e.readUint16();if(57357===a)return 0!==e.readUint32()&&e.warnings("encountered non zero length following item delimiter at position ".concat(e.position-4," while reading element of undefined length with tag ").concat(t.tag)),void(t.length=e.position-t.dataOffset)}t.length=e.byteArray.length-t.dataOffset,e.seek(e.byteArray.length-e.position)}var E=function(e,t){if(void 0!==e.vr)return"SQ"===e.vr;if(t.position+4<=t.byteArray.length){e=h(t);return t.seek(-4),"xfffee000"===e||"xfffee0dd"===e}return t.warnings.push("eof encountered before finding sequence item tag or sequence delimiter tag in peeking to determine VR"),!1};function A(e,t,r){if(void 0===e)throw"dicomParser.readDicomElementImplicit: missing required parameter 'byteStream'";var a=h(e),a={tag:a,vr:void 0!==r?r(a):void 0,length:e.readUint32(),dataOffset:e.position};return 4294967295===a.length&&(a.hadUndefinedLength=!0),a.tag===t||(!E(a,e)||f(a.tag)&&!a.hadUndefinedLength?a.hadUndefinedLength?x(e,a):e.seek(a.length):(F(e,a,r),f(a.tag)&&(a.items=void 0))),a}function S(e){if(void 0===e)throw"dicomParser.readSequenceItem: missing required parameter 'byteStream'";var t={tag:h(e),length:e.readUint32(),dataOffset:e.position};if("xfffee000"!==t.tag)throw"dicomParser.readSequenceItem: item tag (FFFE,E000) not found at offset ".concat(e.position);return t}function D(e,t){var r=S(e);return 4294967295===r.length?(r.hadUndefinedLength=!0,r.dataSet=function(e,t){for(var r={};e.position<e.byteArray.length;){var a=A(e,void 0,t);if("xfffee00d"===(r[a.tag]=a).tag)return new w(e.byteArrayParser,e.byteArray,r)}return e.warnings.push("eof encountered before finding sequence item delimiter in sequence item of undefined length"),new w(e.byteArrayParser,e.byteArray,r)}(e,t),r.length=e.position-r.dataOffset):(r.dataSet=new w(e.byteArrayParser,e.byteArray,{}),T(r.dataSet,e,e.position+r.length,{vrCallback:t})),r}function F(e,t,r){if(void 0===e)throw"dicomParser.readSequenceItemsImplicit: missing required parameter 'byteStream'";if(void 0===t)throw"dicomParser.readSequenceItemsImplicit: missing required parameter 'element'";t.items=[],(4294967295===t.length?function(e,t,r){for(;e.position+4<=e.byteArray.length;){var a=h(e);if(e.seek(-4),"xfffee0dd"===a)return t.length=e.position-t.dataOffset,e.seek(8);a=D(e,r);t.items.push(a)}e.warnings.push("eof encountered before finding sequence delimiter in sequence of undefined length"),t.length=e.byteArray.length-t.dataOffset}:function(e,t,r){for(var a=t.dataOffset+t.length;e.position<a;){var n=D(e,r);t.items.push(n)}})(e,t,r)}function O(e,t){var r=S(e);return 4294967295===r.length?(r.hadUndefinedLength=!0,r.dataSet=function(e,t){for(var r={};e.position<e.byteArray.length;){var a=B(e,t);if("xfffee00d"===(r[a.tag]=a).tag)return new w(e.byteArrayParser,e.byteArray,r)}return t.push("eof encountered before finding item delimiter tag while reading sequence item of undefined length"),new w(e.byteArrayParser,e.byteArray,r)}(e,t),r.length=e.position-r.dataOffset):(r.dataSet=new w(e.byteArrayParser,e.byteArray,{}),q(r.dataSet,e,e.position+r.length)),r}function I(e,t,r){if(void 0===e)throw"dicomParser.readSequenceItemsExplicit: missing required parameter 'byteStream'";if(void 0===t)throw"dicomParser.readSequenceItemsExplicit: missing required parameter 'element'";t.items=[],(4294967295===t.length?function(e,t,r){for(;e.position+4<=e.byteArray.length;){var a=h(e);if(e.seek(-4),"xfffee0dd"===a)return t.length=e.position-t.dataOffset,e.seek(8);a=O(e,r);t.items.push(a)}r.push("eof encountered before finding sequence delimitation tag while reading sequence of undefined length"),t.length=e.position-t.dataOffset}:function(e,t,r){for(var a=t.dataOffset+t.length;e.position<a;){var n=O(e,r);t.items.push(n)}})(e,t,r)}var U=function(e){return"OB"===e||"OD"===e||"OL"===e||"OW"===e||"SQ"===e||"OF"===e||"UC"===e||"UR"===e||"UT"===e||"UN"===e?4:2};function B(e,t,r){if(void 0===e)throw"dicomParser.readDicomElementExplicit: missing required parameter 'byteStream'";var a={tag:h(e),vr:e.readFixedString(2)};return 2===U(a.vr)?a.length=e.readUint16():(e.seek(2),a.length=e.readUint32()),a.dataOffset=e.position,4294967295===a.length&&(a.hadUndefinedLength=!0),a.tag===r||("SQ"===a.vr?I(e,a,t):4294967295===a.length?"x7fe00010"===a.tag?g(e,a,t):("UN"===a.vr?F:x)(e,a):e.seek(a.length)),a}function q(e,t,r){var a=3<arguments.length&&void 0!==arguments[3]?arguments[3]:{};if(r=void 0===r?t.byteArray.length:r,void 0===t)throw"dicomParser.parseDicomDataSetExplicit: missing required parameter 'byteStream'";if(r<t.position||r>t.byteArray.length)throw"dicomParser.parseDicomDataSetExplicit: invalid value for parameter 'maxP osition'";for(var n=e.elements;t.position<r;){var i=B(t,e.warnings,a.untilTag);if((n[i.tag]=i).tag===a.untilTag)return}if(t.position>r)throw"dicomParser:parseDicomDataSetExplicit: buffer overrun"}function T(e,t,r){var a=3<arguments.length&&void 0!==arguments[3]?arguments[3]:{};if(r=void 0===r?e.byteArray.length:r,void 0===t)throw"dicomParser.parseDicomDataSetImplicit: missing required parameter 'byteStream'";if(r<t.position||r>t.byteArray.length)throw"dicomParser.parseDicomDataSetImplicit: invalid value for parameter 'maxPosition'";for(var n=e.elements;t.position<r;){var i=A(t,a.untilTag,a.vrCallback);if((n[i.tag]=i).tag===a.untilTag)return}}function k(e,t){if("undefined"!=typeof Buffer&&e instanceof Buffer)return Buffer.alloc(t);if(e instanceof Uint8Array)return new Uint8Array(t);throw"dicomParser.alloc: unknown type for byteArray"}var L="1.8.12",N={readUint16:function(e,t){if(t<0)throw"bigEndianByteArrayParser.readUint16: position cannot be less than 0";if(t+2>e.length)throw"bigEndianByteArrayParser.readUint16: attempt to read past end of buffer";return(e[t]<<8)+e[t+1]},readInt16:function(e,t){if(t<0)throw"bigEndianByteArrayParser.readInt16: position cannot be less than 0";if(t+2>e.length)throw"bigEndianByteArrayParser.readInt16: attempt to read past end of buffer";t=(e[t]<<8)+e[t+1];return t=32768&t?t-65535-1:t},readUint32:function(e,t){if(t<0)throw"bigEndianByteArrayParser.readUint32: position cannot be less than 0";if(t+4>e.length)throw"bigEndianByteArrayParser.readUint32: attempt to read past end of buffer";return 256*(256*(256*e[t]+e[t+1])+e[t+2])+e[t+3]},readInt32:function(e,t){if(t<0)throw"bigEndianByteArrayParser.readInt32: position cannot be less than 0";if(t+4>e.length)throw"bigEndianByteArrayParser.readInt32: attempt to read past end of buffer";return(e[t]<<24)+(e[t+1]<<16)+(e[t+2]<<8)+e[t+3]},readFloat:function(e,t){if(t<0)throw"bigEndianByteArrayParser.readFloat: position cannot be less than 0";if(t+4>e.length)throw"bigEndianByteArrayParser.readFloat: attempt to read past end of buffer";var r=new Uint8Array(4);return r[3]=e[t],r[2]=e[t+1],r[1]=e[t+2],r[0]=e[t+3],new Float32Array(r.buffer)[0]},readDouble:function(e,t){if(t<0)throw"bigEndianByteArrayParser.readDouble: position cannot be less than 0";if(t+8>e.length)throw"bigEndianByteArrayParser.readDouble: attempt to read past end of buffer";var r=new Uint8Array(8);return r[7]=e[t],r[6]=e[t+1],r[5]=e[t+2],r[4]=e[t+3],r[3]=e[t+4],r[2]=e[t+5],r[1]=e[t+6],r[0]=e[t+7],new Float64Array(r.buffer)[0]}};function j(e,t,r){if("undefined"!=typeof Buffer&&e instanceof Buffer)return e.slice(t,t+r);if(e instanceof Uint8Array)return new Uint8Array(e.buffer,e.byteOffset+t,r);throw"dicomParser.from: unknown type for byteArray"}function C(e,t){for(var r=0;r<t.length;r++){var a=t[r];a.enumerable=a.enumerable||!1,a.configurable=!0,"value"in a&&(a.writable=!0),Object.defineProperty(e,a.key,a)}}var J=function(){function a(e,t,r){if(!function(e,t){if(!(e instanceof t))throw new TypeError("Cannot call a class as a function")}(this,a),void 0===e)throw"dicomParser.ByteStream: missing required parameter 'byteArrayParser'";if(void 0===t)throw"dicomParser.ByteStream: missing required parameter 'byteArray'";if(t instanceof Uint8Array==!1&&("undefined"==typeof Buffer||t instanceof Buffer==!1))throw"dicomParser.ByteStream: parameter byteArray is not of type Uint8Array or Buffer";if(r<0)throw"dicomParser.ByteStream: parameter 'position' cannot be less than 0";if(r>=t.length)throw"dicomParser.ByteStream: parameter 'position' cannot be greater than or equal to 'byteArray' length";this.byteArrayParser=e,this.byteArray=t,this.position=r||0,this.warnings=[]}var e,t,r;return e=a,(t=[{key:"seek",value:function(e){if(this.position+e<0)throw"dicomParser.ByteStream.prototype.seek: cannot seek to position < 0";this.position+=e}},{key:"readByteStream",value:function(e){if(this.position+e>this.byteArray.length)throw"dicomParser.ByteStream.prototype.readByteStream: readByteStream - buffer overread";var t=j(this.byteArray,this.position,e);return this.position+=e,new a(this.byteArrayParser,t)}},{key:"getSize",value:function(){return this.byteArray.length}},{key:"readUint16",value:function(){var e=this.byteArrayParser.readUint16(this.byteArray,this.position);return this.position+=2,e}},{key:"readUint32",value:function(){var e=this.byteArrayParser.readUint32(this.byteArray,this.position);return this.position+=4,e}},{key:"readFixedString",value:function(e){var t=b(this.byteArray,this.position,e);return this.position+=e,t}}])&&C(e.prototype,t),r&&C(e,r),Object.defineProperty(e,"prototype",{writable:!1}),a}(),M={readUint16:function(e,t){if(t<0)throw"littleEndianByteArrayParser.readUint16: position cannot be less than 0";if(t+2>e.length)throw"littleEndianByteArrayParser.readUint16: attempt to read past end of buffer";return e[t]+256*e[t+1]},readInt16:function(e,t){if(t<0)throw"littleEndianByteArrayParser.readInt16: position cannot be less than 0";if(t+2>e.length)throw"littleEndianByteArrayParser.readInt16: attempt to read past end of buffer";t=e[t]+(e[t+1]<<8);return t=32768&t?t-65535-1:t},readUint32:function(e,t){if(t<0)throw"littleEndianByteArrayParser.readUint32: position cannot be less than 0";if(t+4>e.length)throw"littleEndianByteArrayParser.readUint32: attempt to read past end of buffer";return e[t]+256*e[t+1]+256*e[t+2]*256+256*e[t+3]*256*256},readInt32:function(e,t){if(t<0)throw"littleEndianByteArrayParser.readInt32: position cannot be less than 0";if(t+4>e.length)throw"littleEndianByteArrayParser.readInt32: attempt to read past end of buffer";return e[t]+(e[t+1]<<8)+(e[t+2]<<16)+(e[t+3]<<24)},readFloat:function(e,t){if(t<0)throw"littleEndianByteArrayParser.readFloat: position cannot be less than 0";if(t+4>e.length)throw"littleEndianByteArrayParser.readFloat: attempt to read past end of buffer";var r=new Uint8Array(4);return r[0]=e[t],r[1]=e[t+1],r[2]=e[t+2],r[3]=e[t+3],new Float32Array(r.buffer)[0]},readDouble:function(e,t){if(t<0)throw"littleEndianByteArrayParser.readDouble: position cannot be less than 0";if(t+8>e.length)throw"littleEndianByteArrayParser.readDouble: attempt to read past end of buffer";var r=new Uint8Array(8);return r[0]=e[t],r[1]=e[t+1],r[2]=e[t+2],r[3]=e[t+3],r[4]=e[t+4],r[5]=e[t+5],r[6]=e[t+6],r[7]=e[t+7],new Float64Array(r.buffer)[0]}};function G(e){var i=1<arguments.length&&void 0!==arguments[1]?arguments[1]:{};if(void 0===e)throw"dicomParser.readPart10Header: missing required parameter 'byteArray'";var o=i.TransferSyntaxUID,s=new J(M,e);return function(){var e=function(){if(s.getSize()<=132&&o)return!1;if(s.seek(128),"DICM"===s.readFixedString(4))return!0;if(!(i||{}).TransferSyntaxUID)throw"dicomParser.readPart10Header: DICM prefix not found at location 132 - this is not a valid DICOM P10 file.";return s.seek(0),!1}(),t=[],r={};if(!e)return s.position=0,{elements:{x00020010:{tag:"x00020010",vr:"UI",Value:o}},warnings:t};for(;s.position<s.byteArray.length;){var a=s.position,n=B(s,t);if("x0002ffff"<n.tag){s.position=a;break}n.parser=M,r[n.tag]=n}return(e=new w(s.byteArrayParser,s.byteArray,r)).warnings=s.warnings,e.position=s.position,e}()}var z="1.2.840.10008.1.2.2";function V(i){var o=1<arguments.length&&void 0!==arguments[1]?arguments[1]:{};if(void 0===i)throw new Error("dicomParser.parseDicom: missing required parameter 'byteArray'");var e,a=function(e){if(void 0===e.elements.x00020010)throw new Error("dicomParser.parseDicom: missing required meta header attribute 0002,0010");e=e.elements.x00020010;return e&&e.Value||b(i,e.dataOffset,e.length)};function t(t){var e=a(t),r="1.2.840.10008.1.2"!==e,e=function(e,t){var r="[object process]"===Object.prototype.toString.call("undefined"!=typeof process?process:0);if("1.2.840.10008.1.2.1.99"!==e)return new J(e===z?N:M,i,t);if(o&&o.inflater){e=o.inflater(i,t);return new J(M,e,0)}if(!0==r){var a=s(0),n=j(i,t,i.length-t),a=a.inflateRawSync(n),n=k(i,a.length+t);return i.copy(n,0,0,t),a.copy(n,t),new J(M,n,0)}if("undefined"==typeof pako)throw"dicomParser.parseDicom: no inflater available to handle deflate transfer syntax";return a=i.slice(t),n=pako.inflateRaw(a),(a=k(i,n.length+t)).set(i.slice(0,t),0),a.set(n,t),new J(M,a,0)}(e,t.position),t=new w(e.byteArrayParser,e.byteArray,{});t.warnings=e.warnings;try{(r?q:T)(t,e,e.byteArray.length,o)}catch(e){throw{exception:e,dataSet:t}}return t}return function(e,t){for(var r in e.elements)e.elements.hasOwnProperty(r)&&(t.elements[r]=e.elements[r]);return void 0!==e.warnings&&(t.warnings=e.warnings.concat(t.warnings)),t}(e=G(i,o),t(e))}var R=function(e,t,r){for(var a=0,n=t;n<t+r;n++)a+=e[n].length;return a};function _(e,t,r,a,n){if(n=n||t.fragments,void 0===e)throw"dicomParser.readEncapsulatedPixelDataFromFragments: missing required parameter 'dataSet'";if(void 0===t)throw"dicomParser.readEncapsulatedPixelDataFromFragments: missing required parameter 'pixelDataElement'";if(void 0===r)throw"dicomParser.readEncapsulatedPixelDataFromFragments: missing required parameter 'startFragmentIndex'";if(void 0===(a=a||1))throw"dicomParser.readEncapsulatedPixelDataFromFragments: missing required parameter 'numFragments'";if("x7fe00010"!==t.tag)throw"dicomParser.readEncapsulatedPixelDataFromFragments: parameter 'pixelDataElement' refers to non pixel data tag (expected tag = x7fe00010";if(!0!==t.encapsulatedPixelData)throw"dicomParser.readEncapsulatedPixelDataFromFragments: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(!0!==t.hadUndefinedLength)throw"dicomParser.readEncapsulatedPixelDataFromFragments: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(void 0===t.basicOffsetTable)throw"dicomParser.readEncapsulatedPixelDataFromFragments: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(void 0===t.fragments)throw"dicomParser.readEncapsulatedPixelDataFromFragments: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(t.fragments.length<=0)throw"dicomParser.readEncapsulatedPixelDataFromFragments: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(r<0)throw"dicomParser.readEncapsulatedPixelDataFromFragments: parameter 'startFragmentIndex' must be >= 0";if(r>=t.fragments.length)throw"dicomParser.readEncapsulatedPixelDataFromFragments: parameter 'startFragmentIndex' must be < number of fragments";if(a<1)throw"dicomParser.readEncapsulatedPixelDataFromFragments: parameter 'numFragments' must be > 0";if(r+a>t.fragments.length)throw"dicomParser.readEncapsulatedPixelDataFromFragments: parameter 'startFragment' + 'numFragments' < number of fragments";var i=new J(e.byteArrayParser,e.byteArray,t.dataOffset),t=S(i);if("xfffee000"!==t.tag)throw"dicomParser.readEncapsulatedPixelData: missing basic offset table xfffee000";i.seek(t.length);var o=i.position;if(1===a)return j(i.byteArray,o+n[r].offset+8,n[r].length);for(var t=R(n,r,a),s=k(i.byteArray,t),d=0,f=r;f<r+a;f++)for(var l=o+n[f].offset+8,u=0;u<n[f].length;u++)s[d++]=i.byteArray[l++];return s}var H=function(e,t){for(var r=0;r<e.length;r++)if(e[r].offset===t)return r},Q=function(e,t,r,a){if(e===t.length-1)return r.length-a;for(var n=t[e+1],i=a+1;i<r.length;i++)if(r[i].offset===n)return i-a;throw"dicomParser.calculateNumberOfFragmentsForFrame: could not find fragment with offset matching basic offset table"};function W(e,t,r,a,n){if(a=a||t.basicOffsetTable,n=n||t.fragments,void 0===e)throw"dicomParser.readEncapsulatedImageFrame: missing required parameter 'dataSet'";if(void 0===t)throw"dicomParser.readEncapsulatedImageFrame: missing required parameter 'pixelDataElement'";if(void 0===r)throw"dicomParser.readEncapsulatedImageFrame: missing required parameter 'frameIndex'";if(void 0===a)throw"dicomParser.readEncapsulatedImageFrame: parameter 'pixelDataElement' does not have basicOffsetTable";if("x7fe00010"!==t.tag)throw"dicomParser.readEncapsulatedImageFrame: parameter 'pixelDataElement' refers to non pixel data tag (expected tag = x7fe00010)";if(!0!==t.encapsulatedPixelData)throw"dicomParser.readEncapsulatedImageFrame: parameter 'pixelDataElement' refers to pixel data element that does not have encapsulated pixel data";if(!0!==t.hadUndefinedLength)throw"dicomParser.readEncapsulatedImageFrame: parameter 'pixelDataElement' refers to pixel data element that does not have undefined length";if(void 0===t.fragments)throw"dicomParser.readEncapsulatedImageFrame: parameter 'pixelDataElement' refers to pixel data element that does not have fragments";if(0===a.length)throw"dicomParser.readEncapsulatedImageFrame: basicOffsetTable has zero entries";if(r<0)throw"dicomParser.readEncapsulatedImageFrame: parameter 'frameIndex' must be >= 0";if(r>=a.length)throw"dicomParser.readEncapsulatedImageFrame: parameter 'frameIndex' must be < basicOffsetTable.length";var i=a[r],i=H(n,i);if(void 0===i)throw"dicomParser.readEncapsulatedImageFrame: unable to find fragment that matches basic offset table entry";return _(e,t,i,Q(r,a,n,i),n)}var $=!1;function K(e,t,r){if($||($=!0,console&&console.log&&console.log("WARNING: dicomParser.readEncapsulatedPixelData() has been deprecated")),void 0===e)throw"dicomParser.readEncapsulatedPixelData: missing required parameter 'dataSet'";if(void 0===t)throw"dicomParser.readEncapsulatedPixelData: missing required parameter 'element'";if(void 0===r)throw"dicomParser.readEncapsulatedPixelData: missing required parameter 'frame'";if("x7fe00010"!==t.tag)throw"dicomParser.readEncapsulatedPixelData: parameter 'element' refers to non pixel data tag (expected tag = x7fe00010)";if(!0!==t.encapsulatedPixelData)throw"dicomParser.readEncapsulatedPixelData: parameter 'element' refers to pixel data element that does not have encapsulated pixel data";if(!0!==t.hadUndefinedLength)throw"dicomParser.readEncapsulatedPixelData: parameter 'element' refers to pixel data element that does not have encapsulated pixel data";if(void 0===t.basicOffsetTable)throw"dicomParser.readEncapsulatedPixelData: parameter 'element' refers to pixel data element that does not have encapsulated pixel data";if(void 0===t.fragments)throw"dicomParser.readEncapsulatedPixelData: parameter 'element' refers to pixel data element that does not have encapsulated pixel data";if(r<0)throw"dicomParser.readEncapsulatedPixelData: parameter 'frame' must be >= 0";return 0!==t.basicOffsetTable.length?W(e,t,r):_(e,t,0,t.fragments.length)}t.default={isStringVr:d,isPrivateTag:f,parsePN:a,parseTM:n,parseDA:o,explicitElementToString:l,explicitDataSetToJS:u,createJPEGBasicOffsetTable:p,parseDicomDataSetExplicit:q,parseDicomDataSetImplicit:T,readFixedString:b,alloc:k,version:L,bigEndianByteArrayParser:N,ByteStream:J,sharedCopy:j,DataSet:w,findAndSetUNElementLength:y,findEndOfEncapsulatedElement:g,findItemDelimitationItemAndSetElementLength:x,littleEndianByteArrayParser:M,parseDicom:V,readDicomElementExplicit:B,readDicomElementImplicit:A,readEncapsulatedImageFrame:W,readEncapsulatedPixelData:K,readEncapsulatedPixelDataFromFragments:_,readPart10Header:G,readSequenceItemsExplicit:I,readSequenceItemsImplicit:F,readSequenceItem:S,readTag:h,LEI:"1.2.840.10008.1.2",LEE:"1.2.840.10008.1.2.1"}}],i={},n.m=a,n.c=i,n.d=function(e,t,r){n.o(e,t)||Object.defineProperty(e,t,{enumerable:!0,get:r})},n.r=function(e){"undefined"!=typeof Symbol&&Symbol.toStringTag&&Object.defineProperty(e,Symbol.toStringTag,{value:"Module"}),Object.defineProperty(e,"__esModule",{value:!0})},n.t=function(t,e){if(1&e&&(t=n(t)),8&e)return t;if(4&e&&"object"==typeof t&&t&&t.__esModule)return t;var r=Object.create(null);if(n.r(r),Object.defineProperty(r,"default",{enumerable:!0,value:t}),2&e&&"string"!=typeof t)for(var a in t)n.d(r,a,function(e){return t[e]}.bind(null,a));return r},n.n=function(e){var t=e&&e.__esModule?function(){return e.default}:function(){return e};return n.d(t,"a",t),t},n.o=function(e,t){return Object.prototype.hasOwnProperty.call(e,t)},n.p="",n(n.s=1);function n(e){if(i[e])return i[e].exports;var t=i[e]={i:e,l:!1,exports:{}};return a[e].call(t.exports,t,t.exports,n),t.l=!0,t.exports}var a,i});
+//# sourceMappingURL=dicomParser.min.js.map
+</script>
+
 <script>
 'use strict';
 
 const state = {
+  slices: [],         // [{ rows, cols, windowed:Uint8ClampedArray, instanceNumber, brightness, name }]
+  metadata: {},
   currentSlice: 0,
   totalSlices: 0,
   zoom: 1,
@@ -504,14 +516,9 @@ const state = {
   contrast: 100,
   compareMode: false,
   referenceSlice: 0,
-  metadata: {},
-  sliceBrightness: [],
 };
 
-const PRELOAD_RADIUS = 20;
-const imageCache = new Map();
-
-const slicePath = n => `./slices/slice_${String(n + 1).padStart(4, '0')}.png`;
+/* ---------- Status helper ---------- */
 
 function showStatus(msg, ms = 1500) {
   const el = document.getElementById('status');
@@ -521,76 +528,358 @@ function showStatus(msg, ms = 1500) {
   showStatus._t = setTimeout(() => el.classList.remove('show'), ms);
 }
 
-function loadImage(idx) {
-  if (idx < 0 || idx >= state.totalSlices) return Promise.resolve(null);
-  if (imageCache.has(idx)) return Promise.resolve(imageCache.get(idx));
+/* ---------- Folder collection ---------- */
+
+async function collectFiles(dataTransfer) {
+  const out = [];
+  const items = dataTransfer.items;
+  if (items && items.length && items[0].webkitGetAsEntry) {
+    const entries = [];
+    for (const it of items) {
+      const e = it.webkitGetAsEntry && it.webkitGetAsEntry();
+      if (e) entries.push(e);
+    }
+    for (const e of entries) await walkEntry(e, out);
+  } else {
+    for (const f of dataTransfer.files) out.push(f);
+  }
+  return out;
+}
+
+function walkEntry(entry, out) {
   return new Promise(resolve => {
-    const img = new Image();
-    img.onload = () => { imageCache.set(idx, img); resolve(img); };
-    img.onerror = () => resolve(null);
-    img.src = slicePath(idx);
+    if (entry.isFile) {
+      entry.file(f => { out.push(f); resolve(); }, () => resolve());
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const readBatch = () => {
+        reader.readEntries(async batch => {
+          if (!batch.length) return resolve();
+          for (const e of batch) await walkEntry(e, out);
+          readBatch();
+        }, () => resolve());
+      };
+      readBatch();
+    } else {
+      resolve();
+    }
   });
 }
 
-function preload(center) {
-  for (let off = -PRELOAD_RADIUS; off <= PRELOAD_RADIUS; off++) {
-    const i = center + off;
-    if (i >= 0 && i < state.totalSlices && !imageCache.has(i)) {
-      loadImage(i);
+function looksLikeDicom(file) {
+  const n = (file.name || '').toLowerCase();
+  if (n.endsWith('.dcm') || n.endsWith('.dicom')) return true;
+  if (n.startsWith('.')) return false; // hidden
+  // Many scanners produce extensionless files. Allow them; parser will reject non-DICOM.
+  return !n.includes('.') || n.endsWith('.ima');
+}
+
+/* ---------- DICOM parsing ---------- */
+
+function readAsArrayBuffer(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+    r.readAsArrayBuffer(file);
+  });
+}
+
+function autoWindow(pixels) {
+  // 1%–99% percentile via sampled sort
+  const stride = Math.max(1, Math.floor(pixels.length / 20000));
+  const samples = [];
+  for (let i = 0; i < pixels.length; i += stride) samples.push(pixels[i]);
+  samples.sort((a, b) => a - b);
+  const lo = samples[Math.floor(samples.length * 0.01)];
+  const hi = samples[Math.floor(samples.length * 0.99)];
+  const width = Math.max(hi - lo, 1);
+  const center = (hi + lo) / 2;
+  return { center, width };
+}
+
+function applyWindow(pixels, center, width, invert) {
+  const lo = center - width / 2;
+  const hi = center + width / 2;
+  const span = Math.max(hi - lo, 1);
+  const out = new Uint8ClampedArray(pixels.length);
+  for (let i = 0; i < pixels.length; i++) {
+    let v = pixels[i];
+    v = ((v - lo) / span) * 255;
+    if (invert) v = 255 - v;
+    out[i] = v;
+  }
+  return out;
+}
+
+function meanBrightness(arr) {
+  let s = 0;
+  for (let i = 0; i < arr.length; i += 16) s += arr[i];
+  return s / (arr.length / 16);
+}
+
+function decodePixels(dataSet, byteArray) {
+  const pixelEl = dataSet.elements.x7fe00010;
+  if (!pixelEl) return null;
+  const rows = dataSet.uint16('x00280010');
+  const cols = dataSet.uint16('x00280011');
+  if (!rows || !cols) return null;
+  const bitsAllocated = dataSet.uint16('x00280100') || 16;
+  const pixelRepresentation = dataSet.uint16('x00280103') || 0;
+  const samplesPerPixel = dataSet.uint16('x00280002') || 1;
+  if (samplesPerPixel !== 1) return null; // grayscale only
+
+  const transferSyntax = (dataSet.string('x00020010') || '').trim();
+  const uncompressed = !transferSyntax
+    || transferSyntax === '1.2.840.10008.1.2'        // Implicit VR LE
+    || transferSyntax === '1.2.840.10008.1.2.1'      // Explicit VR LE
+    || transferSyntax === '1.2.840.10008.1.2.2';     // Explicit VR BE
+  if (!uncompressed) return { unsupported: true, transferSyntax };
+
+  const offset = pixelEl.dataOffset;
+  const expected = rows * cols * Math.ceil(bitsAllocated / 8);
+  if (byteArray.length < offset + expected) return null;
+
+  let pixels;
+  if (bitsAllocated === 8) {
+    if (pixelRepresentation === 1) {
+      pixels = new Int8Array(byteArray.buffer, byteArray.byteOffset + offset, rows * cols).slice();
+    } else {
+      pixels = new Uint8Array(byteArray.buffer, byteArray.byteOffset + offset, rows * cols).slice();
+    }
+  } else if (bitsAllocated === 16) {
+    const bigEndian = transferSyntax === '1.2.840.10008.1.2.2';
+    const Ctor = pixelRepresentation === 1 ? Int16Array : Uint16Array;
+    if (!bigEndian && (byteArray.byteOffset + offset) % 2 === 0) {
+      pixels = new Ctor(byteArray.buffer, byteArray.byteOffset + offset, rows * cols).slice();
+    } else {
+      pixels = new Ctor(rows * cols);
+      const dv = new DataView(byteArray.buffer, byteArray.byteOffset + offset, rows * cols * 2);
+      const reader = pixelRepresentation === 1 ? dv.getInt16.bind(dv) : dv.getUint16.bind(dv);
+      for (let i = 0; i < rows * cols; i++) pixels[i] = reader(i * 2, !bigEndian);
+    }
+  } else {
+    return { unsupported: true, bitsAllocated };
+  }
+
+  const slope = dataSet.floatString('x00281053');
+  const intercept = dataSet.floatString('x00281052');
+  const rescaled = new Float32Array(pixels.length);
+  const m = (typeof slope === 'number' && !isNaN(slope)) ? slope : 1;
+  const b = (typeof intercept === 'number' && !isNaN(intercept)) ? intercept : 0;
+  for (let i = 0; i < pixels.length; i++) rescaled[i] = pixels[i] * m + b;
+
+  return { rows, cols, pixels: rescaled };
+}
+
+async function parseFolder(files) {
+  const drop = document.getElementById('drop');
+  const prog = document.getElementById('progress');
+  const errEl = document.getElementById('drop-err');
+  drop.style.display = 'none';
+  prog.classList.add('show');
+  errEl.textContent = '';
+
+  const candidates = files.filter(looksLikeDicom);
+  const total = candidates.length || files.length;
+  const list = candidates.length ? candidates : files;
+
+  const slices = [];
+  let firstMeta = null;
+  let processed = 0;
+  let skippedCompressed = 0;
+
+  const progbar = document.getElementById('progbar');
+  const progtext = document.getElementById('progtext');
+
+  for (const file of list) {
+    processed++;
+    progtext.textContent = `${processed} / ${total}  —  ${file.name}`;
+    progbar.style.width = ((processed / total) * 100) + '%';
+    if (processed % 4 === 0) await new Promise(r => setTimeout(r, 0));
+
+    try {
+      const buf = await readAsArrayBuffer(file);
+      const byteArray = new Uint8Array(buf);
+      const dataSet = dicomParser.parseDicom(byteArray);
+
+      const decoded = decodePixels(dataSet, byteArray);
+      if (!decoded) continue;
+      if (decoded.unsupported) { skippedCompressed++; continue; }
+
+      const { rows, cols, pixels } = decoded;
+
+      const wcRaw = dataSet.floatString('x00281050');
+      const wwRaw = dataSet.floatString('x00281051');
+      let center, width;
+      if (typeof wcRaw === 'number' && typeof wwRaw === 'number' && wwRaw > 0) {
+        center = wcRaw; width = wwRaw;
+      } else {
+        ({ center, width } = autoWindow(pixels));
+      }
+
+      const photo = (dataSet.string('x00280004') || '').trim();
+      const invert = photo === 'MONOCHROME1';
+
+      const windowed = applyWindow(pixels, center, width, invert);
+      const instanceNumber = parseInt(dataSet.string('x00200013') || '0', 10) || 0;
+
+      slices.push({
+        rows, cols, windowed,
+        instanceNumber,
+        brightness: meanBrightness(windowed),
+        name: file.name,
+      });
+
+      if (!firstMeta) {
+        const ps = dataSet.string('x00280030');
+        let psStr = 'unknown';
+        if (ps) {
+          const parts = ps.split('\\').map(p => parseFloat(p));
+          if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+            psStr = `${parts[0].toFixed(2)}mm x ${parts[1].toFixed(2)}mm`;
+          }
+        }
+        const st = dataSet.floatString('x00180050');
+        firstMeta = {
+          patient_id: 'ANON',
+          study_description: dataSet.string('x00081030') || '',
+          series_description: dataSet.string('x0008103e') || '',
+          modality: dataSet.string('x00080060') || '',
+          slice_thickness: (typeof st === 'number' && !isNaN(st)) ? `${st.toFixed(1)}mm` : 'unknown',
+          pixel_spacing: psStr,
+          rows, cols,
+          window_center: Math.round(center * 100) / 100,
+          window_width: Math.round(width * 100) / 100,
+        };
+      }
+    } catch (_) {
+      // skip non-DICOM or corrupt
     }
   }
-  if (imageCache.size > 200) {
-    const keep = new Set();
-    for (let off = -PRELOAD_RADIUS; off <= PRELOAD_RADIUS; off++) keep.add(center + off);
-    for (const k of imageCache.keys()) if (!keep.has(k)) imageCache.delete(k);
+
+  if (slices.length === 0) {
+    prog.classList.remove('show');
+    drop.style.display = 'flex';
+    errEl.textContent = skippedCompressed > 0
+      ? `Skipped ${skippedCompressed} compressed DICOM file(s); only uncompressed transfer syntaxes are supported.`
+      : 'No DICOM images found in that folder.';
+    return;
   }
+
+  slices.sort((a, b) => {
+    const ai = a.instanceNumber || 0;
+    const bi = b.instanceNumber || 0;
+    if (ai !== bi) return ai - bi;
+    return a.name.localeCompare(b.name);
+  });
+
+  state.slices = slices;
+  state.totalSlices = slices.length;
+  firstMeta.total_slices = slices.length;
+  state.metadata = firstMeta;
+
+  prog.classList.remove('show');
+  bootViewer();
 }
 
-function applyTransform(img) {
-  img.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
-  img.style.filter = `brightness(${state.brightness}%) contrast(${state.contrast}%)`;
+/* ---------- Drop / pick wiring ---------- */
+
+function setupDrop() {
+  const drop = document.getElementById('drop');
+  const picker = document.getElementById('picker');
+
+  document.getElementById('pick-btn').addEventListener('click', () => picker.click());
+
+  picker.addEventListener('change', async () => {
+    const files = Array.from(picker.files || []);
+    if (files.length) parseFolder(files);
+  });
+
+  ['dragenter', 'dragover'].forEach(evt => {
+    window.addEventListener(evt, e => {
+      e.preventDefault();
+      drop.classList.add('over');
+    });
+  });
+  ['dragleave', 'drop'].forEach(evt => {
+    window.addEventListener(evt, e => {
+      e.preventDefault();
+      if (evt === 'dragleave' && e.target !== drop && e.relatedTarget) return;
+      drop.classList.remove('over');
+    });
+  });
+  window.addEventListener('drop', async e => {
+    e.preventDefault();
+    drop.classList.remove('over');
+    if (drop.style.display === 'none') return; // ignore drops once viewer is open
+    const files = await collectFiles(e.dataTransfer);
+    if (files.length) parseFolder(files);
+  });
 }
 
-async function showSlice(idx) {
+/* ---------- Viewer ---------- */
+
+function fitCanvas(canvas) {
+  const wrap = canvas.parentElement;
+  const cw = wrap.clientWidth, ch = wrap.clientHeight;
+  if (!cw || !ch || !canvas.width || !canvas.height) return;
+  const ar = canvas.width / canvas.height;
+  let dw, dh;
+  if (cw / ch > ar) { dh = ch; dw = ch * ar; }
+  else              { dw = cw; dh = cw / ar; }
+  canvas.style.width = Math.floor(dw) + 'px';
+  canvas.style.height = Math.floor(dh) + 'px';
+}
+
+function drawSlice(canvas, idx) {
+  const s = state.slices[idx];
+  if (!s) return;
+  canvas.width = s.cols;
+  canvas.height = s.rows;
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(s.cols, s.rows);
+  const w = s.windowed;
+  const data = img.data;
+  for (let i = 0, j = 0; i < w.length; i++, j += 4) {
+    const v = w[i];
+    data[j] = v; data[j + 1] = v; data[j + 2] = v; data[j + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  fitCanvas(canvas);
+}
+
+function applyTransform(canvas) {
+  canvas.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
+  canvas.style.filter = `brightness(${state.brightness}%) contrast(${state.contrast}%)`;
+}
+function applyTransformAll() {
+  applyTransform(document.getElementById('canvas-main'));
+  applyTransform(document.getElementById('canvas-ref'));
+}
+
+function showSlice(idx) {
   idx = Math.max(0, Math.min(state.totalSlices - 1, idx));
   state.currentSlice = idx;
-
-  const img = await loadImage(idx);
-  const mainImg = document.getElementById('img-main');
-  if (img) {
-    mainImg.src = img.src;
-  }
-  applyTransform(mainImg);
-
+  drawSlice(document.getElementById('canvas-main'), idx);
+  applyTransform(document.getElementById('canvas-main'));
   document.getElementById('counter-top').textContent = idx + 1;
   document.getElementById('counter-bottom').textContent = idx + 1;
   document.getElementById('slice-num-main').textContent = `${idx + 1} / ${state.totalSlices}`;
   document.getElementById('slider').value = idx;
   updateHeatmapPos();
-
-  preload(idx);
 }
 
-async function showReference(idx) {
+function showReference(idx) {
   state.referenceSlice = idx;
-  const img = await loadImage(idx);
-  const refImg = document.getElementById('img-ref');
-  if (img) refImg.src = img.src;
-  applyTransform(refImg);
+  drawSlice(document.getElementById('canvas-ref'), idx);
+  applyTransform(document.getElementById('canvas-ref'));
   document.getElementById('slice-num-ref').textContent = `${idx + 1} / ${state.totalSlices}`;
 }
 
-function applyTransformAll() {
-  applyTransform(document.getElementById('img-main'));
-  applyTransform(document.getElementById('img-ref'));
-}
-
 function resetView() {
-  state.zoom = 1;
-  state.panX = 0;
-  state.panY = 0;
-  state.brightness = 100;
-  state.contrast = 100;
+  state.zoom = 1; state.panX = 0; state.panY = 0;
+  state.brightness = 100; state.contrast = 100;
   applyTransformAll();
   showStatus('VIEW RESET');
 }
@@ -625,8 +914,6 @@ function toggleHelp() {
   document.getElementById('btn-help').classList.toggle('active', el.classList.contains('show'));
 }
 
-/* ---------- Metadata ---------- */
-
 function renderMetadata(md) {
   const labels = {
     total_slices: 'Total Slices',
@@ -654,54 +941,8 @@ function renderMetadata(md) {
   }
 }
 
-/* ---------- Brightness sampling for heatmap / notable ---------- */
-
-async function sampleBrightness() {
-  const offCanvas = document.createElement('canvas');
-  offCanvas.width = 32;
-  offCanvas.height = 32;
-  const ctx = offCanvas.getContext('2d', { willReadFrequently: true });
-  const out = new Float32Array(state.totalSlices);
-
-  const loadbar = document.getElementById('loadbar');
-  const loadtext = document.getElementById('loadtext');
-
-  const concurrency = 8;
-  let nextIdx = 0;
-  let completed = 0;
-
-  async function worker() {
-    while (true) {
-      const i = nextIdx++;
-      if (i >= state.totalSlices) return;
-      const img = await loadImage(i);
-      if (img) {
-        try {
-          ctx.clearRect(0, 0, 32, 32);
-          ctx.drawImage(img, 0, 0, 32, 32);
-          const data = ctx.getImageData(0, 0, 32, 32).data;
-          let sum = 0;
-          for (let p = 0; p < data.length; p += 4) sum += data[p];
-          out[i] = sum / (32 * 32);
-        } catch (_) {
-          out[i] = 0;
-        }
-      }
-      completed++;
-      const pct = Math.round((completed / state.totalSlices) * 100);
-      loadbar.style.width = pct + '%';
-      loadtext.textContent = `${completed} / ${state.totalSlices}`;
-      // Drop from cache if outside preload window of slice 0 to save memory
-      if (Math.abs(i - 0) > PRELOAD_RADIUS) imageCache.delete(i);
-    }
-  }
-
-  await Promise.all(Array.from({ length: concurrency }, worker));
-  state.sliceBrightness = Array.from(out);
-}
-
 function computeNotables() {
-  const arr = state.sliceBrightness.slice();
+  const arr = state.slices.map(s => s.brightness);
   const sorted = arr.slice().sort((a, b) => a - b);
   const total = sorted.length;
   if (total === 0) return { warn: [], danger: [] };
@@ -763,7 +1004,7 @@ function renderHeatmap() {
   ctx.clearRect(0, 0, cssW, cssH);
   const total = state.totalSlices;
   if (!total) return;
-  const arr = state.sliceBrightness;
+  const arr = state.slices.map(s => s.brightness);
   const mn = Math.min(...arr);
   const mx = Math.max(...arr);
   const span = Math.max(mx - mn, 1);
@@ -784,16 +1025,15 @@ function updateHeatmapPos() {
   if (!total) return;
   const heat = document.getElementById('heatmap');
   const pos = document.getElementById('heatmap-pos');
-  const h = heat.clientHeight;
-  pos.style.top = ((state.currentSlice / Math.max(total - 1, 1)) * h) + 'px';
+  pos.style.top = ((state.currentSlice / Math.max(total - 1, 1)) * heat.clientHeight) + 'px';
 }
 
-/* ---------- Input handlers ---------- */
+/* ---------- Input ---------- */
 
 function setupInput() {
-  const canvas = document.getElementById('canvas');
+  const canvasArea = document.getElementById('canvas-area');
 
-  canvas.addEventListener('wheel', e => {
+  canvasArea.addEventListener('wheel', e => {
     e.preventDefault();
     if (e.ctrlKey) {
       const delta = e.deltaY < 0 ? 1.1 : 1 / 1.1;
@@ -806,19 +1046,16 @@ function setupInput() {
   }, { passive: false });
 
   let dragging = null;
-  canvas.addEventListener('mousedown', e => {
+  canvasArea.addEventListener('mousedown', e => {
     if (e.button !== 0) return;
     dragging = {
       mode: e.altKey ? 'pan' : 'level',
-      startX: e.clientX,
-      startY: e.clientY,
+      startX: e.clientX, startY: e.clientY,
       startBright: state.brightness,
       startContrast: state.contrast,
-      startPanX: state.panX,
-      startPanY: state.panY,
+      startPanX: state.panX, startPanY: state.panY,
     };
   });
-
   window.addEventListener('mousemove', e => {
     if (!dragging) return;
     const dx = e.clientX - dragging.startX;
@@ -832,18 +1069,14 @@ function setupInput() {
     }
     applyTransformAll();
   });
-
   window.addEventListener('mouseup', () => { dragging = null; });
+  canvasArea.addEventListener('dblclick', resetView);
 
-  canvas.addEventListener('dblclick', resetView);
-
-  /* Heatmap click + hover */
   const heat = document.getElementById('heatmap');
   const heatJump = e => {
     const rect = heat.getBoundingClientRect();
     const t = (e.clientY - rect.top) / rect.height;
-    const i = Math.round(t * (state.totalSlices - 1));
-    showSlice(i);
+    showSlice(Math.round(t * (state.totalSlices - 1)));
   };
   heat.addEventListener('click', heatJump);
   let heatDragging = false;
@@ -851,11 +1084,9 @@ function setupInput() {
   window.addEventListener('mouseup', () => { heatDragging = false; });
   heat.addEventListener('mousemove', e => { if (heatDragging) heatJump(e); });
 
-  /* Slider */
   const slider = document.getElementById('slider');
   slider.addEventListener('input', () => showSlice(parseInt(slider.value, 10)));
 
-  /* Buttons */
   document.getElementById('btn-prev').addEventListener('click', () => showSlice(state.currentSlice - 1));
   document.getElementById('btn-next').addEventListener('click', () => showSlice(state.currentSlice + 1));
   document.getElementById('btn-compare').addEventListener('click', toggleCompare);
@@ -867,15 +1098,19 @@ function setupInput() {
     showReference(state.currentSlice);
     showStatus(`REF SET → SLICE ${state.currentSlice + 1}`);
   });
+  document.getElementById('btn-reload').addEventListener('click', () => {
+    state.slices = []; state.totalSlices = 0;
+    document.getElementById('app').classList.remove('show');
+    document.getElementById('drop').style.display = 'flex';
+    document.getElementById('drop-err').textContent = '';
+    document.getElementById('picker').value = '';
+  });
 
-  /* Keyboard */
   window.addEventListener('keydown', e => {
     if (e.target.tagName === 'INPUT') return;
     switch (e.key) {
-      case 'ArrowUp':    e.preventDefault(); showSlice(state.currentSlice - 1); break;
-      case 'ArrowDown':  e.preventDefault(); showSlice(state.currentSlice + 1); break;
-      case 'ArrowLeft':  e.preventDefault(); showSlice(state.currentSlice - 1); break;
-      case 'ArrowRight': e.preventDefault(); showSlice(state.currentSlice + 1); break;
+      case 'ArrowUp': case 'ArrowLeft':   e.preventDefault(); showSlice(state.currentSlice - 1); break;
+      case 'ArrowDown': case 'ArrowRight':e.preventDefault(); showSlice(state.currentSlice + 1); break;
       case 'r': case 'R': resetView(); break;
       case 'i': case 'I': toggleInfo(); break;
       case 'c': case 'C': toggleCompare(); break;
@@ -886,55 +1121,38 @@ function setupInput() {
   window.addEventListener('resize', () => {
     renderHeatmap();
     updateHeatmapPos();
+    fitCanvas(document.getElementById('canvas-main'));
+    fitCanvas(document.getElementById('canvas-ref'));
   });
-
-  /* Prevent native page scroll over canvas */
-  canvas.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
 }
 
-/* ---------- Boot ---------- */
+/* ---------- Boot viewer after parse ---------- */
 
-async function boot() {
-  let md;
-  try {
-    const res = await fetch('./slices/metadata.json', { cache: 'no-store' });
-    if (!res.ok) throw new Error('metadata.json missing');
-    md = await res.json();
-  } catch (_) {
-    document.getElementById('loading').classList.add('hidden');
-    document.getElementById('error').classList.add('show');
-    return;
-  }
-
-  state.metadata = md;
-  state.totalSlices = md.total_slices || 0;
-
-  if (state.totalSlices <= 0) {
-    document.getElementById('loading').classList.add('hidden');
-    document.getElementById('error').classList.add('show');
-    return;
-  }
+let inputWired = false;
+function bootViewer() {
+  const app = document.getElementById('app');
+  app.classList.add('show');
 
   document.getElementById('counter-total').textContent = state.totalSlices;
   document.getElementById('counter-total-bottom').textContent = state.totalSlices;
   document.getElementById('slider').max = state.totalSlices - 1;
+  document.getElementById('btn-info').classList.add('active');
 
-  renderMetadata(md);
-  setupInput();
+  renderMetadata(state.metadata);
 
-  await sampleBrightness();
   const notables = computeNotables();
   renderSliderMarks(notables);
   renderNotableList(notables);
   renderHeatmap();
 
-  await showSlice(0);
-  document.getElementById('btn-info').classList.add('active');
+  if (!inputWired) { setupInput(); inputWired = true; }
 
-  document.getElementById('loading').classList.add('hidden');
+  showSlice(0);
 }
 
-boot();
+/* ---------- Init ---------- */
+
+setupDrop();
 </script>
 </body>
 </html>
